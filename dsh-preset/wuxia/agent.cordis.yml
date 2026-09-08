@@ -1,0 +1,24 @@
+# 武侠RPG 游戏主持 Preset。Skill 随 Preset 安装，通过 baseUrl 自定位。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: |-
+      你是武侠RPG的游戏主持人（GM），运行在 {{model}} 模型上。
+      玩家会在对话中推进游戏。开始时先用 use_skill 加载 wuxia-rpg，并严格遵循其规则。
+      玩家主动行动调用 wuxia_go；剧情裁定与状态落盘调用 wuxia_judge；属性判定调用 wuxia_check；随机事件调用 wuxia_random_event。
+      查询数据分别使用 wuxia_query、wuxia_setting、wuxia_recommend、wuxia_map_query。
+      只输出规范游戏界面、提示与机制答复；禁止剧透未揭示内容、直接泄露角色属性数值或展示思考过程。
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'

@@ -1,0 +1,188 @@
+{
+  "protocol_version": "1.0",
+  "tools": [
+    {
+      "name": "wuxia_go",
+      "operation": "go",
+      "title": "武侠 go",
+      "description": "武侠RPG 玩家主动指令的机制结算（go）。传入 槽位（存档号）与 行为 数组，返回含 界面 字段的结果。不增轮次、不自动存档。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "行为": {"type": "array", "description": "go 行为数组", "items": {"type": "object", "additionalProperties": true}}
+        },
+        "required": ["槽位", "行为"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "界面": {"type": "string"},
+          "错误": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "wuxia_judge",
+      "operation": "judge",
+      "title": "武侠 judge",
+      "description": "武侠RPG GM 推演后的裁定落盘（judge）。承载顶层叙事字段与行为数组（状态变更）。仅返回 exploration-ui 的 judge 才推进轮次。注意：arguments 必须是合法 JSON；当前剧情等字符串值内不得出现未转义的半角双引号（引用对话/字词一律用「」），不得含裸换行。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "行为": {"type": "array", "description": "状态变更/战斗 action 数组", "items": {"type": "object", "additionalProperties": true}},
+          "当前剧情": {"type": "string", "description": "本回合剧情（非战斗裁定必填）"},
+          "场景要素": {"type": "array", "description": "场景要素", "items": {"type": "object", "additionalProperties": true}},
+          "经历概括": {"type": "string", "description": "经历概括"}
+        },
+        "required": ["槽位", "行为"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "界面": {"type": "string"},
+          "错误": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "wuxia_check",
+      "operation": "check",
+      "title": "武侠 check",
+      "description": "武侠RPG 判定掷骰。GM 推演剧情前，若本回合依赖角色某项技艺/属性水平高低，先调此工具掷骰，并据结果（成功/失败）推演。掷骰结果会留痕，judge 时核对是否已高亮带入剧情。判断是否触发随机事件请用 wuxia_random_event 工具。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "属性": {"type": "array", "description": "判定属性名数组（多属性取均值）", "items": {"type": "string"}},
+          "判定角色": {"type": "array", "description": "判定角色名数组（多角色取均值）", "items": {"type": "string"}},
+          "对抗": {"type": "string", "description": "角色名（可逗号多个）或以 @ 开头的数值"},
+          "基础成功率": {"type": "number", "description": "基础成功率 0~100，缺省50"}
+        },
+        "required": ["槽位"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "结果": {"type": "string"},
+          "提示": {"type": "string"},
+          "错误": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "wuxia_random_event",
+      "operation": "random-event",
+      "title": "武侠 random-event",
+      "description": "武侠RPG 随机事件判定。移动等行动按基础触发率判断是否触发随机事件（遭遇/发现/天气/传闻/求助）。返回 触发/未触发。不落盘留痕。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "基础成功率": {"type": "number", "description": "基础触发率 0~100，缺省15"}
+        },
+        "required": ["槽位"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "结果": {"type": "string"},
+          "提示": {"type": "string"},
+          "错误": {"type": "string"}
+        }
+      }
+    },
+    {
+      "name": "wuxia_query",
+      "operation": "query",
+      "title": "武侠 query",
+      "description": "武侠RPG 基础数据查询。查询角色、武学、物品、状态、阵营或场景角色；支持批量名称、字段筛选、角色派生属性和指定等级武学特效。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
+          "类型": {"type": "string", "description": "角色 / 武学 / 物品 / 状态 / 阵营 / 场景角色"},
+          "名称": {"type": "array", "description": "名称数组；不传则列出该类型全部名称", "items": {"type": "string"}},
+          "派生": {"type": "boolean", "description": "角色查询是否附带战斗同源派生属性"},
+          "字段": {"type": "array", "description": "仅返回指定字段", "items": {"type": "string"}},
+          "等级": {"type": "integer", "description": "武学精进等级，缺省1"},
+          "位置": {"type": "string", "description": "查询场景角色时传入 区域·场景"}
+        },
+        "required": ["槽位", "类型"]
+      },
+      "output_schema": {"type": "object", "additionalProperties": true}
+    },
+    {
+      "name": "wuxia_setting",
+      "operation": "setting",
+      "title": "武侠 setting",
+      "description": "武侠RPG 设定查询。按门派或人物聚合返回门派描述、位置、武学、成员或人物身份、人设、生死与所属门派。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
+          "目标": {"type": "string", "description": "门派名或人物名"}
+        },
+        "required": ["槽位", "目标"]
+      },
+      "output_schema": {"type": "object", "additionalProperties": true}
+    },
+    {
+      "name": "wuxia_recommend",
+      "operation": "recommend",
+      "title": "武侠 recommend",
+      "description": "武侠RPG 自创角色武学推荐。按阵营、四项一级属性和武学偏好返回心法、主动武学与装备推荐。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
+          "姓名": {"type": "string", "description": "角色姓名，仅作标识"},
+          "阵营": {"type": "string", "description": "门派名或江湖/散人，缺省散人"},
+          "一级属性": {
+            "type": "object",
+            "description": "内功、力道、身法、根骨四项整数",
+            "additionalProperties": false,
+            "properties": {
+              "内功": {"type": "integer"},
+              "力道": {"type": "integer"},
+              "身法": {"type": "integer"},
+              "根骨": {"type": "integer"}
+            },
+            "required": ["内功", "力道", "身法", "根骨"]
+          },
+          "武学偏好": {"type": "string", "description": "剑法 / 刀法 / 长兵 / 奇门 / 暗器 / 搏击"}
+        },
+        "required": ["槽位", "一级属性", "武学偏好"]
+      },
+      "output_schema": {"type": "object", "additionalProperties": true}
+    },
+    {
+      "name": "wuxia_map_query",
+      "operation": "map-query",
+      "title": "武侠 map-query",
+      "description": "武侠RPG 地图查询。返回区域内基线/新增场景、方位出口、场景类型、功能NPC、孤点及配额余量；区域传“配额”时列全区域上限。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
+          "区域": {"type": "string", "description": "区域名（支持唯一子串）或“配额”"}
+        },
+        "required": ["槽位", "区域"]
+      },
+      "output_schema": {"type": "object", "additionalProperties": true}
+    }
+  ]
+}

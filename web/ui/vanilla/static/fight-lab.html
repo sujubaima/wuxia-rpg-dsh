@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>演武场（测试入口）</title>
+<style>
+  :root{
+    --bg:#0f0d0a; --panel:#1a1612; --panel2:#221c16; --ink:#e8dcc4; --ink-dim:#9a8c6e;
+    --accent:#c8a456; --accent2:#8a6a2a; --border:#3a2f22; --danger:#c45a4a; --ok:#7a9a5a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);display:flex;flex-direction:column;align-items:center;
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;padding:40px 16px}
+  .wrap{max-width:860px;width:100%}
+  h1{font-size:19px;color:var(--accent);letter-spacing:6px;margin:0 0 4px;text-align:center}
+  .sub{font-size:12px;color:var(--ink-dim);text-align:center;letter-spacing:2px;margin-bottom:24px}
+  .note{font-size:12px;color:var(--ink-dim);line-height:1.9;border:1px dashed var(--border);
+    border-radius:7px;padding:8px 14px;margin:14px 0}
+  .note b{color:var(--accent);font-weight:600}
+  table.lanes{width:100%;border-collapse:separate;border-spacing:14px 0;table-layout:fixed}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:9px;padding:12px 14px;min-height:160px}
+  .lane-title{font-size:13px;color:var(--accent);letter-spacing:3px;border-bottom:1px solid var(--border);
+    padding-bottom:6px;margin-bottom:8px}
+  .lane-title.enemy{color:#d99a7a}
+  .cnt{float:right;font-size:12px;color:var(--ink-dim);letter-spacing:0}
+  .chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;
+    padding:3px 10px;margin:3px 4px 3px 0;font-size:12.5px;cursor:default;background:var(--panel2)}
+  .chip button{border:none;background:transparent;color:var(--ink-dim);cursor:pointer;font-size:13px;
+    padding:0 2px;font-family:inherit}
+  .chip button:hover{color:var(--accent)}
+  .pool{display:flex;flex-wrap:wrap;margin-top:8px;align-items:center}
+  .pool .chip{cursor:pointer}
+  .pool .chip:hover{border-color:var(--accent)}
+  input[type=text]{background:#0c0a07;color:var(--ink);border:1px solid var(--border);border-radius:6px;
+    padding:6px 10px;font-family:inherit;font-size:13px;min-width:170px}
+  select{appearance:none;-webkit-appearance:none;cursor:pointer;font-family:inherit;font-size:13px;
+    color:var(--ink);background:#0c0a07;border:1px solid var(--border);border-radius:5px;padding:6px 10px}
+  .opts{display:flex;gap:18px;align-items:center;margin:16px 2px;font-size:13px;flex-wrap:wrap}
+  .opts label{display:flex;gap:6px;align-items:center;color:var(--ink-dim)}
+  .go{width:100%;padding:12px;border:none;border-radius:9px;margin-top:16px;
+    background:linear-gradient(180deg,#c8a456,#9a7830);color:#1a1208;font-size:15px;font-weight:600;
+    cursor:pointer;letter-spacing:4px}
+  .go:disabled{opacity:.45;cursor:not-allowed}
+  .wipe{width:100%;padding:9px;border:1px solid #6a3a34;border-radius:9px;margin-top:8px;background:var(--panel2);
+    color:var(--danger);font-size:13px;cursor:pointer;letter-spacing:2px;display:none}
+  #status{font-size:12.5px;color:var(--ok);margin-top:10px;min-height:18px;text-align:center}
+  #status.err{color:var(--danger)}
+  .back{display:inline-block;margin-top:16px;color:var(--ink-dim);font-size:12.5px;letter-spacing:1px}
+  .back:hover{color:var(--accent)}
+  .fbtn-sm{padding:4px 10px;font-size:12px;border:1px solid var(--accent2);border-radius:5px;
+    background:var(--panel2);color:var(--accent);cursor:pointer;font-family:inherit;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>演 武 场</h1>
+  <div class="sub">隐藏测试入口 · 双方全用预设角色 · 结束后不落盘</div>
+  <div class="note">
+    本场在<b>独立测试档 slot</b>（角色名「演武场主」，自动建、自动复用）上开战，<b>不读玩家当前档数据</b>。
+    开庭<b>直接调 engine judge 战斗-开始（不经过 LLM，仅限本测试入口）</b>；主路径游历→战斗仍严格走 LLM。
+    点「收尾清档」即删测试档，<b>零残留写入</b>；战后回 /game 如停在测试档界面，去「标题」TAB 读你真档即可。
+  </div>
+
+  <table class="lanes"><tr>
+    <td style="vertical-align:top">
+      <div class="panel">
+        <div class="lane-title">我方 <span class="cnt" id="allyCnt">0 人</span></div>
+        <div id="allyList"></div>
+        <div style="margin-top:10px">
+          <input type="text" id="allyInput" placeholder="自定义 / 写角色 NPC 名" />
+          <button class="fbtn-sm" id="allyAdd">＋加</button>
+        </div>
+        <div class="pool" id="allyPool"></div>
+      </div>
+    </td>
+    <td style="vertical-align:top">
+      <div class="panel">
+        <div class="lane-title enemy">敌方 <span class="cnt" id="foeCnt">0 人</span></div>
+        <div id="foeList"></div>
+        <div style="margin-top:10px">
+          <input type="text" id="foeInput" placeholder="自定义 / 写角色 NPC 名" />
+          <button class="fbtn-sm" id="foeAdd">＋加</button>
+        </div>
+        <div class="pool" id="foePool"></div>
+      </div>
+    </td>
+  </tr></table>
+
+  <div class="opts">
+    <label>操控方式
+      <select id="ctrl">
+        <option>我方全员</option><option>玩家角色</option><option>AI自动</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="escape" checked> 允许逃跑</label>
+    <span style="font-size:11.5px;color:var(--ink-dim)" id="slotNote">测试档准备中…</span>
+  </div>
+
+  <button class="go" id="goBtn">开 战 · 交送 GM 触发</button>
+  <button class="wipe" id="wipeBtn">收 尾 清 档（删除测试战全档）</button>
+  <div id="status"></div>
+  <div style="text-align:center"><a class="back" href="/game">↩ 回主界面</a></div>
+</div>
+
+<script>
+const PRESETS=['骆逸','朱如碧','和悦','余绮','陈挺之','穆双清'];
+const allyNames=[],foeNames=[];
+let TEST_SLOT=0;
+// 跳转目标：?to=/ui 跳 React 版，缺省 /game 跳原版。两套前端共用同一 sessionStorage 接管协议。
+const TO=new URLSearchParams(location.search).get('to')||'/game';
+const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;};
+const $=id=>document.getElementById(id);
+function setStatus(t,err){const s=$('status');s.textContent=t||'';s.className=err?'err':'';}
+
+async function engineGo(actions,slot){
+  const resp=await fetch('/api/engine',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({"槽位":slot!=null?slot:1,"行为":actions})});
+  return await resp.json().catch(()=>({"错误":"响应非 JSON"}));
+}
+
+/* 测试档：角色名「演武场主」——查到即复用，查不到才建（建一次即可，后同复用） */
+async function ensureTestSlot(){
+  const all=await engineGo([{"类型":"开始游戏"}]);
+  const found=(all.存档列表||[]).find(s=>(s.角色名||'')==='演武场主');
+  if(found){TEST_SLOT=found.slot;}
+  else{
+    const c=await engineGo([{"类型":"创建角色","角色":{
+      "名称":"演武场主","性别":"男","年龄":30,"阵营":"我方",
+      "一级属性":{"内功":8,"力道":8,"身法":8,"根骨":8},
+      "极性":{"内功":"中","力道":"中","身法":"中","根骨":"中"},
+      "武艺":{"搏击":8,"剑法":8,"刀法":8,"长兵":8,"奇门":8,"暗器":8},
+      "技艺":{"音律":8,"弈棋":8,"诗书":8,"绘画":8,"医术":8,"博物":8},
+      "武学":[{"名称":"百缠手","等级":1}],"携带技能":["百缠手"],
+      "携带物品":[],"运转心法":null,
+      "装备":{"武器1":null,"武器2":null,"护甲":null,"饰品":null,"冠巾":null},
+      "物品":[],"人设":"演武场主持，非江湖人。"}}]);
+    TEST_SLOT=(c.结算||[]).find(x=>x.新建slot)?.新建slot||0;
+  }
+  $('slotNote').textContent=TEST_SLOT?('测试档 slot '+TEST_SLOT):'测试档创建失败';
+}
+
+function renderLanes(){
+  for(const [list,names,cntId,side] of [
+      ['allyList',allyNames,'allyCnt','ally'],['foeList',foeNames,'foeCnt','foe']]){
+    const box=$(list);box.innerHTML='';
+    $(cntId).textContent=names.length+' 人';
+    names.forEach((n,i)=>{
+      const c=el('span','chip',n);
+      const mv=el('button',null,'⇄');mv.title='移到对面';
+      mv.onclick=()=>{
+        const dst=side==='ally'?foeNames:allyNames;
+        names.splice(i,1);dst.push(n);renderLanes();
+      };
+      c.appendChild(mv);box.appendChild(c);
+    });
+    if(!names.length){const e=el('span',null,'（空）');e.style.color='var(--ink-dim)';box.appendChild(e);}
+  }
+}
+function makePool(box,side){
+  const hint=el('span',null,'常用预设：');hint.style.cssText='font-size:11px;color:var(--ink-dim)';
+  box.appendChild(hint);
+  for(const n of PRESETS){
+    const c=el('span','chip',n);
+    c.onclick=()=>{
+      const arr=side==='ally'?allyNames:foeNames;
+      if(!arr.includes(n)){arr.push(n);renderLanes();}
+    };
+    box.appendChild(c);
+  }
+}
+function bindAdd(inputId,btnId,arr){
+  const add=()=>{
+    const v=$(inputId).value.trim();if(!v)return;
+    for(const n of v.split(/[，,、\s]+/).filter(Boolean))
+      if(!arr.includes(n))arr.push(n);
+    $(inputId).value='';renderLanes();
+  };
+  $(btnId).onclick=add;
+  $(inputId).addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();add();}});
+}
+
+$('goBtn').onclick=async()=>{
+  if(!allyNames.length)return setStatus('我方为空（至少一名）',true);
+  if(!foeNames.length)return setStatus('敌方为空（至少一名）',true);
+  if(!TEST_SLOT)return setStatus('测试档未就绪',true);
+  const ctrl=$('ctrl').value;
+  const esc=$('escape').checked;
+  $('goBtn').disabled=true;setStatus('经 engine judge 直接开庭…');
+  try{
+    /* fight-lab 专属：不经 LLM，直接调 engine judge 战斗-开始（主路径游历→战斗仍严格走 LLM） */
+    const resp=await fetch('/api/engine',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({"method":"judge","槽位":TEST_SLOT,"当前剧情":"",
+        "行为":[{"类型":"战斗-开始","我方":allyNames,"敌方":foeNames,
+          "允许逃跑":esc,"操控方式":ctrl}]})});
+    const d=await resp.json().catch(()=>({"错误":"响应非 JSON"}));
+    if(d.error&&!d.错误)d.错误=d.error;
+    if(d.错误){setStatus('开庭未成功：'+d.错误,true);return;}
+    if(!(['battle-ui','battle-end-ui'].includes(d.界面))){
+      setStatus('开庭未成功（无 battle 界面返回）：'+JSON.stringify(d).slice(0,160),true);return;
+    }
+    sessionStorage.setItem('wuxia_newui_slot',String(TEST_SLOT));   // 控制台直驱须以测试档为当前档
+    sessionStorage.setItem('wuxia_pending_battle',JSON.stringify(d)); // 启动时接管战斗界面
+    setStatus('开庭成功——跳回主界面进入战斗…');
+    $('wipeBtn').style.display='block';
+    setTimeout(()=>location.href=TO,800);
+  }catch(e){setStatus('开庭失败：'+e.message,true);}
+  finally{$('goBtn').disabled=false;}
+};
+
+$('wipeBtn').onclick=async()=>{
+  if(!TEST_SLOT)return setStatus('无测试档',true);
+  if(!confirm('删除测试档 slot '+TEST_SLOT+' 全部数据（测试战叙事/损耗一并丢弃，玩家真档不受影响）？'))return;
+  try{
+    const r=await engineGo([{"类型":"删除存档","槽位":TEST_SLOT}],TEST_SLOT);
+    const ok=r['结算']&&r['结算'].some(x=>x.ok);
+    setStatus(ok?'测试档已清空。回主界面后请手动读你真档。':'清档回执异常：'+JSON.stringify(r.结算||r.错误),ok?false:true);
+    if(ok){$('wipeBtn').style.display='none';TEST_SLOT=0;$('slotNote').textContent='测试档已删';}
+  }catch(e){setStatus('清档失败：'+e.message,true);}
+};
+
+ensureTestSlot();
+makePool(document.getElementById('allyPool'),'ally');
+makePool(document.getElementById('foePool'),'foe');
+bindAdd('allyInput','allyAdd',allyNames);
+bindAdd('foeInput','foeAdd',foeNames);
+renderLanes();
+</script>
+</body>
+</html>

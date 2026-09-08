@@ -1,0 +1,25 @@
+{
+  "backend_mode": "llm",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "frontend": "old"
+  },
+  "paths": {
+    "save_dir": "",
+    "skill_dir": ""
+  },
+  "engine": {
+    "service_url": "",
+    "timeout_ms": 120000
+  },
+  "llm": {
+    "base_url": "",
+    "api_token": "",
+    "model": ""
+  },
+  "claude": {
+    "command": "claude",
+    "permission_mode": "auto"
+  }
+}

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>demo · 大世界游历视图</title>
+<style>
+  :root{
+    --bg:#0f0d0a; --panel:#1a1612; --panel2:#221c16; --ink:#e8dcc4; --ink-dim:#9a8c6e;
+    --accent:#c8a456; --accent2:#8a6a2a; --you:#3a2a1e;
+    --border:#3a2f22; --danger:#c45a4a; --ok:#7a9a5a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--ink);display:flex;flex-direction:column;
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 18px;flex:0 0 auto;
+    background:linear-gradient(180deg,#1f1812,#15110d);border-bottom:1px solid var(--border)}
+  header .seal{width:32px;height:32px;border-radius:6px;background:linear-gradient(135deg,#a83232,#7a1f1f);
+    display:flex;align-items:center;justify-content:center;color:#f3e3c0;font-weight:700;font-size:17px}
+  header h1{font-size:17px;margin:0;font-weight:600;letter-spacing:2px}
+  header .sub{font-size:12px;color:var(--ok);letter-spacing:1px}
+  header .spacer{flex:1}
+  header a{color:var(--ink-dim);border:1px solid var(--border);padding:5px 12px;border-radius:6px;
+    font-size:13px;text-decoration:none;margin-left:6px}
+  header a:hover{color:var(--accent);border-color:var(--accent2)}
+
+  main{flex:1 1 auto;display:flex;min-height:0}
+
+  /* ============ 左：TAB ============ */
+  nav.tabs{width:112px;flex:0 0 auto;background:var(--panel);border-right:1px solid var(--border);
+    padding:12px 10px;display:flex;flex-direction:column;gap:6px}
+  .tab{padding:9px 4px;text-align:center;font-size:14px;letter-spacing:3px;border-radius:6px;
+    border:1px solid transparent;color:var(--ink-dim);user-select:none}
+  .tab.active{background:var(--accent);color:#1a1208;font-weight:600}
+
+  /* ============ 中：抬头带 + 叙事区 + 输入 ============ */
+  section.center{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;position:relative}
+
+  /* —— 中央抬头带（时辰地点从右栏挪来） —— */
+  .headband{flex:0 0 auto;padding:14px 26px 12px;border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#221a10,#1a1612 70%);
+    display:flex;align-items:flex-end;gap:22px;position:relative;overflow:hidden}
+  .headband::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(600px 80px at 20% -40px,rgba(200,164,86,.12),transparent)}
+  .hb-loc .region{font-size:13px;color:var(--ink-dim);letter-spacing:3px}
+  .hb-loc .scene{font-size:26px;color:var(--accent);font-weight:600;letter-spacing:6px;margin-top:2px}
+  .hb-spacer{flex:1}
+  .hb-time{text-align:right;line-height:1.7}
+  .hb-time .clock{font-size:15px;color:var(--ink)}
+  .hb-time .clock .icon{margin-right:6px}
+  .hb-time .cal{font-size:12px;color:var(--ink-dim);letter-spacing:1px}
+  .hb-save{font-size:11px;color:var(--ink-dim);border:1px dashed var(--border);border-radius:10px;
+    padding:1px 10px;align-self:center;letter-spacing:1px}
+
+  /* —— 叙事区 —— */
+  #stage{flex:1 1 auto;overflow-y:auto;padding:22px 26px 12px;scroll-behavior:smooth}
+  .stage-in{max-width:760px;margin:0 auto}
+  .narration{font-size:15.5px;line-height:2.1;color:var(--ink);letter-spacing:.5px}
+  .narration p{margin:0 0 10px}
+  .narration::first-letter{font-size:1.9em;color:var(--accent);line-height:1;
+    float:left;margin:4px 8px 0 0}
+  .changes{display:flex;flex-wrap:wrap;gap:6px;margin:14px 0 4px}
+  .chg{font-size:12.5px;color:var(--accent);border:1px solid var(--accent2);border-radius:4px;
+    padding:1px 9px;background:rgba(200,164,86,.07);animation:chgIn .5s ease both}
+  .chg.hurt{color:var(--danger);border-color:#6a3a34;background:rgba(196,90,74,.08)}
+  @keyframes chgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  .sc-title{font-size:12.5px;color:var(--ink-dim);letter-spacing:4px;margin:20px 0 8px;
+    border-bottom:1px dashed var(--border);padding-bottom:5px}
+  .sc-list{display:flex;flex-direction:column;gap:6px}
+  .sc-elem{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;
+    border:1px solid var(--border);border-radius:6px;padding:5px 12px;background:var(--panel2);
+    cursor:pointer;align-self:flex-start;transition:border-color .15s}
+  .sc-elem:hover{border-color:var(--accent2);color:var(--accent)}
+  .sc-elem .dot{color:var(--accent2);font-size:10px}
+
+  /* —— 罗盘 —— */
+  .compass-wrap{display:flex;align-items:center;gap:20px;margin:22px 0 8px;flex-wrap:wrap}
+  .compass{display:grid;grid-template-columns:repeat(3,58px);grid-template-rows:repeat(3,58px);
+    gap:4px;flex:0 0 auto}
+  .ccell{border:1px solid var(--border);border-radius:7px;background:var(--panel2);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+    font-size:11px;color:var(--ink-dim);cursor:pointer;transition:all .15s;padding:2px}
+  .ccell .dir{font-size:13px;color:var(--accent2)}
+  .ccell .nm{font-size:10px;line-height:1.2;text-align:center;overflow:hidden;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;max-width:52px}
+  .ccell.exit:hover{border-color:var(--accent);background:#2a2318;transform:translateY(-2px);
+    box-shadow:0 3px 10px rgba(0,0,0,.4)}
+  .ccell.exit:hover .nm{color:var(--ink)}
+  .ccell.here{background:linear-gradient(180deg,#2e2310,#221c12);border-color:var(--accent);
+    cursor:default}
+  .ccell.here .nm{color:var(--accent);font-weight:600}
+  .ccell.fog{opacity:.28;cursor:default;border-style:dashed}
+  .cnote{font-size:12px;color:var(--ink-dim);line-height:2;max-width:300px}
+  .cnote b{color:var(--accent);font-weight:600}
+
+  /* —— 足迹日志（折叠） —— */
+  #log{margin-top:26px;border-top:1px solid var(--border);padding-top:10px}
+  #log summary{cursor:pointer;font-size:12.5px;color:var(--ink-dim);letter-spacing:2px;
+    user-select:none;list-style:none}
+  #log summary::before{content:"▸ 足迹（前情回顾）"}
+  #log[open] summary::before{content:"▾ 足迹（前情回顾）"}
+  #log .logitem{font-size:12.5px;color:var(--ink-dim);line-height:1.9;padding:8px 4px;
+    border-bottom:1px dashed var(--border);white-space:pre-wrap}
+  #log .logitem b{color:var(--accent2)}
+
+  /* —— 输入 —— */
+  #composer{flex:0 0 auto;border-top:1px solid var(--border);background:var(--panel);padding:10px 26px 14px}
+  .cform{max-width:760px;margin:0 auto;display:flex;gap:10px;align-items:flex-end}
+  textarea{flex:1;resize:none;min-height:42px;max-height:120px;padding:10px 13px;background:var(--panel2);
+    color:var(--ink);border:1px solid var(--border);border-radius:9px;font-size:15px;line-height:1.5;
+    font-family:inherit;outline:none}
+  textarea:focus{border-color:var(--accent2)}
+  #send{flex:0 0 auto;height:42px;padding:0 18px;border:none;border-radius:9px;
+    background:linear-gradient(180deg,#c8a456,#9a7830);color:#1a1208;font-size:15px;font-weight:600;cursor:pointer}
+  .hint{max-width:760px;margin:5px auto 0;color:var(--ink-dim);font-size:11.5px;min-height:15px}
+
+  /* ============ 右：队伍统一栏 ============ */
+  aside.party{width:264px;flex:0 0 auto;background:var(--panel);border-left:1px solid var(--border);
+    padding:14px 16px;overflow-y:auto;font-size:13px;display:flex;flex-direction:column;gap:10px}
+  .resrow{display:flex;gap:8px}
+  .res{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+    padding:6px 10px;font-size:12px;color:var(--ink-dim)}
+  .res b{display:block;color:var(--accent);font-size:15px;margin-top:1px}
+  .ptitle{font-size:13px;color:var(--accent);letter-spacing:3px;border-bottom:1px solid var(--border);
+    padding-bottom:6px;margin-top:2px}
+  .pmember{border:1px solid var(--border);border-radius:7px;padding:9px 11px;background:var(--panel2);
+    cursor:pointer;transition:border-color .15s}
+  .pmember:hover{border-color:var(--accent2)}
+  .pmember.me{border-color:var(--accent2);background:linear-gradient(180deg,#2a2114,#221c16)}
+  .pmember .top{display:flex;align-items:baseline;gap:8px}
+  .pmember .nm{color:var(--accent);font-size:14.5px}
+  .pmember .who{font-size:11px;color:var(--ink-dim)}
+  .pmember .xinyou{margin-left:auto;font-size:10.5px;color:var(--ok)}
+  .bars{margin-top:6px;display:flex;flex-direction:column;gap:4px}
+  .bar{position:relative;height:13px;background:#0c0a07;border:1px solid var(--border);border-radius:3px;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;transition:width .4s ease}
+  .bar.hp i{background:#8a4a3a}.bar.mp i{background:#3a5a8a}
+  .bar.low i{background:#a83232}
+  .bar span{position:absolute;left:6px;top:0;font-size:9.5px;line-height:13px;color:var(--ink)}
+  .sts{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+  .st{font-size:10.5px;border:1px solid var(--accent2);border-radius:8px;padding:0 7px;color:var(--accent)}
+  .st.debuff{color:var(--danger);border-color:#6a3a34}
+  .pfoot{margin-top:auto;font-size:11px;color:var(--ink-dim);letter-spacing:1px;text-align:center;
+    border-top:1px dashed var(--border);padding-top:8px}
+
+  /* toast */
+  #toastWrap{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:6px;z-index:120}
+  .toast{background:rgba(26,22,18,.94);border:1px solid var(--accent2);border-radius:6px;color:var(--ink);
+    font-size:12.5px;padding:6px 12px;opacity:0;transform:translateY(6px);transition:all .25s}
+  .toast.show{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="seal">武</div>
+  <h1>武侠 · 江湖</h1>
+  <span class="sub">demo · 大世界游历视图（假数据）</span>
+  <div class="spacer"></div>
+  <a href="/static/demo-battle.html">→ 战斗 demo</a>
+  <a href="/game">↩ 返回正式界面</a>
+</header>
+
+<main>
+  <nav class="tabs">
+    <div class="tab active">游历</div><div class="tab">物品</div><div class="tab">装备</div>
+    <div class="tab">武学</div><div class="tab">地图</div><div class="tab">存档</div>
+    <div class="tab">线索</div><div class="tab">角色</div>
+  </nav>
+
+  <section class="center">
+    <!-- 中央抬头带：地点 + 时辰（从右栏挪来） -->
+    <div class="headband">
+      <div class="hb-loc">
+        <div class="region" id="hbRegion">苏州</div>
+        <div class="scene" id="hbScene">观 前 街</div>
+      </div>
+      <div class="hb-spacer"></div>
+      <div class="hb-save" id="hbSave">距自动存档 3 轮</div>
+      <div class="hb-time">
+        <div class="clock"><span class="icon">☀</span><span id="hbClock">未时三刻 · 白天</span></div>
+        <div class="cal" id="hbCal">第一年 一月二日</div>
+      </div>
+    </div>
+
+    <div id="stage">
+      <div class="stage-in" id="stageIn"><!-- JS 填 --></div>
+    </div>
+
+    <footer id="composer">
+      <form class="cform" id="form">
+        <textarea id="input" placeholder="落字成令…（demo：输入仅记入足迹日志）" rows="1"></textarea>
+        <button id="send" type="submit">送出</button>
+      </form>
+      <div class="hint" id="hint">点罗盘方位格＝发送「前往」，点场景要素＝补全对话指令</div>
+    </footer>
+  </section>
+
+  <!-- 右：队伍统一渲染（游历/战斗同一块） -->
+  <aside class="party">
+    <div class="resrow">
+      <div class="res">体力<b>72</b></div>
+      <div class="res">金钱<b>1两560钱</b></div>
+    </div>
+    <div class="ptitle">当前队伍</div>
+    <div id="pmembers"></div>
+    <div class="pfoot">点击人物卡 → 角色信息</div>
+  </aside>
+</main>
+<div id="toastWrap"></div>
+
+<script>
+/* ================= 假数据（对齐 engine 返回结构） ================= */
+const FAKE={
+  party:[
+    {名称:"沈听雪",me:true,who:"主控 · 18岁",气血:80,气血上限:95,内力:41,内力上限:60,
+     心法:"太乙心法（运转中）",状态:[{名:"运功·太乙",debuff:false}]},
+    {名称:"叶瞬光",who:"剑客 · 苏州",气血:32,气血上限:78,内力:44,内力上限:50,
+     状态:[{名:"破防 2回合",debuff:true}]},
+    {名称:"码头脚夫老周",who:"向导 · 苏州",气血:21,气血上限:60,内力:5,内力上限:20,状态:[]},
+  ],
+  scenes:{
+    "观前街":{要素:["飞檐酒楼（人声鼎沸，有酒旗招展）","货郎（挑担而过，吆喝针线杂物）","道旁老丐（缩在墙角打盹）"],
+      出口:{北:"北辰派山门",南:"玄妙观",西:"阊门外大街"},
+      叙事:"暮色自飞檐上漫下来，观前街的灯笼一盏盏点起。玄妙观的钟声从南面悠悠荡来，\n你掸了掸衣袍上的风尘，站定在这人流如织的街口——苏州城，到了。",
+      变更:["抵达 观前街","体力-5","获得 小还丹×1"]},
+    "北辰派山门":{要素:["两尊石狮（苔痕斑驳）","山门弟子（抱剑而立）","公告木牌（字迹新描）"],
+      出口:{南:"观前街"},
+      叙事:"山门高耸，石阶尽头「北辰」二字沉雄依旧，只是守门弟子的眉宇间掩着一分忧色。\n风过松林，隐约听得内里演武之声。",
+      变更:["抵达 北辰派山门","时辰+1刻"]},
+    "玄妙观":{要素:["三清殿（香烟缭绕）","卦摊老者（闭目养神）","香客三三两两"],
+      出口:{北:"观前街",南:"平江路"},
+      叙事:"观内香烟袅袅，文昌阁下风铃轻响。卦摊老者眼皮也不抬，却像早知你要来似的，\n枯瘦的手指在签筒上轻轻敲了两下。",
+      变更:["抵达 玄妙观"]},
+    "平江路":{要素:["枕河人家（临水而居）","娄江码头（船影幢幢）","府衙（门前肃静）"],
+      出口:{北:"玄妙观",东:"娄江码头",西:"府衙"},
+      叙事:"一条平江，半城人家。乌篷船从石桥下吱呀摇过，船娘的小调散在水汽里。\n你放慢脚步，任青石板把足音敲得悠长。",
+      变更:["抵达 平江路"]},
+    "娄江码头":{要素:["脚夫老周（扛包往来）","货船连樯（帆布半卷）","茶棚（炉火正旺）"],
+      出口:{西:"平江路",南:"太湖口"},
+      叙事:"码头上号子声此起彼伏，娄江水拍打着石驳岸。老周远远瞧见你，咧开嘴挥了挥手上的汗巾。",
+      变更:["抵达 娄江码头"]},
+    "府衙":{要素:["朱漆大门（铜钉森然）","告示榜（缉捕文书）","差役两名（挎刀肃立）"],
+      出口:{东:"平江路"},
+      叙事:"府衙门前肃杀几分，告示榜上一纸缉捕文书墨迹未干，画像上的面容被风吹得微微卷起。",
+      变更:["抵达 府衙"]},
+    "太湖口":{要素:["渔船（夕照归帆）","礁石滩（浪碎如雪）","远处水寨（灯火不明）"],
+      出口:{北:"娄江码头",西:"阊门水驿"},
+      叙事:"太湖烟波浩渺，晚风裹着水腥气扑面而来。远处水寨的灯火在暮色里忽明忽暗，\n像一头伏在水面上的兽。",
+      变更:["抵达 太湖口"]},
+  }
+};
+const DIRS=[["西北","北","东北"],["西","","东"],["西南","南","东南"]];
+
+/* ================= 渲染 ================= */
+let cur="观前街";
+const $=id=>document.getElementById(id);
+const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;}
+function toast(msg){const w=$("toastWrap");const t=el("div","toast",msg);w.appendChild(t);
+  requestAnimationFrame(()=>t.classList.add("show"));
+  setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),300);},2200);}
+
+function renderParty(){
+  const box=$("pmembers");box.innerHTML="";
+  for(const m of FAKE.party){
+    const d=el("div","pmember"+(m.me?" me":""));
+    const top=el("div","top");
+    top.appendChild(el("span","nm",m.名称));
+    top.appendChild(el("span","who",m.who));
+    if(m.心法)top.appendChild(el("span","xinyou","◈"));
+    d.appendChild(top);
+    const bars=el("div","bars");
+    const hpP=m.气血/m.气血上限*100, mpP=m.内力/m.内力上限*100;
+    bars.innerHTML=
+      `<div class="bar hp${hpP<35?" low":""}"><i style="width:${hpP}%"></i><span>气血 ${m.气血}/${m.气血上限}</span></div>
+       <div class="bar mp"><i style="width:${mpP}%"></i><span>内力 ${m.内力}/${m.内力上限}</span></div>`;
+    d.appendChild(bars);
+    if(m.心法){d.appendChild(el("div","st"));d.lastChild.style.border="none";d.lastChild.style.marginTop="5px";
+      d.lastChild.style.color="var(--ink-dim)";d.lastChild.textContent=m.心法;}
+    if(m.状态.length){const sts=el("div","sts");
+      for(const s of m.状态)sts.appendChild(el("span","st"+(s.debuff?" debuff":""),s.名));
+      d.appendChild(sts);}
+    d.onclick=()=>toast(`查看人物信息 · ${m.名称}（demo 占位）`);
+    box.appendChild(d);
+  }
+}
+
+function renderScene(){
+  const s=FAKE.scenes[cur];if(!s)return;
+  $("hbScene").textContent=cur.split("").join(" ");
+  const box=$("stageIn");box.innerHTML="";
+  // 叙事
+  const nar=el("div","narration");
+  for(const para of s.叙事.split("\n"))nar.appendChild(el("p",null,para));
+  box.appendChild(nar);
+  // 状态变化
+  if(s.变更.length){const ch=el("div","changes");
+    for(const v of s.变更)ch.appendChild(el("span","chg"+(/体力-|气血-/.test(v)?" hurt":""),v));
+    box.appendChild(ch);}
+  // 场景要素
+  box.appendChild(el("div","sc-title","周 围 情 况"));
+  const list=el("div","sc-list");
+  for(const f of s.要素){
+    const e=el("div","sc-elem");
+    e.appendChild(el("span","dot","◆"));
+    e.appendChild(el("span",null,f));
+    const who=f.split("（")[0];
+    e.onclick=()=>{$("input").value=`与${who}交谈`;$("input").focus();};
+    list.appendChild(e);
+  }
+  box.appendChild(list);
+  // 罗盘
+  const cw=el("div","compass-wrap");
+  const cp=el("div","compass");
+  const exits=s.出口||{};
+  for(const row of DIRS)for(const dir of row){
+    if(dir===""){
+      const c=el("div","ccell here");
+      c.appendChild(el("span","nm","◈ "+cur));
+      cp.appendChild(c);continue;
+    }
+    if(exits[dir]){
+      const c=el("div","ccell exit");
+      c.appendChild(el("span","dir",dir));
+      c.appendChild(el("span","nm",exits[dir]));
+      c.onclick=()=>{appendLog(cur,`前往 ${exits[dir]}（${dir}）`);cur=exits[dir];renderScene();toast(`前往 ${exits[dir]}`);};
+      cp.appendChild(c);
+    }else{
+      const c=el("div","ccell fog");
+      c.appendChild(el("span","dir",dir));
+      c.appendChild(el("span","nm","未知"));
+      cp.appendChild(c);
+    }
+  }
+  cw.appendChild(cp);
+  const note=el("div","cnote");
+  note.innerHTML=`已开启出口 <b>${Object.keys(exits).length}</b> 方；迷雾方位随游历逐步揭开。<br>点方位格即可启程。`;
+  cw.appendChild(note);
+  box.appendChild(cw);
+  // 足迹日志
+  box.appendChild(logBox);
+  $("stage").scrollTop=$("stage").scrollHeight;
+}
+
+/* 足迹日志（折叠） */
+const logBox=el("details");logBox.id="log";
+logBox.appendChild(el("summary"));
+const logEntries=[];
+function appendLog(at,act){
+  logEntries.unshift({at,act});
+  for(const c of logBox.children)if(c.tagName!=="SUMMARY")c.remove();
+  for(const e of logEntries){
+    const it=el("div","logitem");
+    it.innerHTML=`<b>【${e.at}】</b> ${e.act}`;
+    logBox.appendChild(it);
+  }
+}
+appendLog("阊门水驿","下船登岸，初入苏州");
+
+/* 输入框（demo：只记足迹） */
+$("form").addEventListener("submit",e=>{
+  e.preventDefault();
+  const v=$("input").value.trim();if(!v)return;
+  appendLog(cur,v);toast("（demo）指令仅记入足迹，正式版交送 GM");
+  $("input").value="";
+});
+
+renderParty();
+renderScene();
+</script>
+</body>
+</html>

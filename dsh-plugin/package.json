@@ -1,0 +1,56 @@
+{
+  "name": "wuxia-rpg-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "武侠RPG dsh 插件：工具、隐藏界面命令与对话流 UI，经 HTTP 调 engine service",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "npm run build:host && npm run build:client",
+    "build:host": "tsc",
+    "build:client": "node build-client.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:host && node --test tests/*.test.mjs"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*",
+    "react": "*",
+    "react-dom": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "esbuild": "^0.28.2",
+    "typescript": "5.6"
+  },
+  "dependencies": {
+    "zustand": "^4.5.7"
+  }
+}

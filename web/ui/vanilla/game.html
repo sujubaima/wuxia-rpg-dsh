@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>武侠 · 江湖（新界面）</title>
+<link rel="stylesheet" href="/ui/vanilla/static/game.css">
+</head>
+
+<body>
+<header>
+  <div class="seal">武</div>
+  <h1>武侠 · 江湖</h1>
+  <span class="sub">新界面</span>
+  <div class="spacer"></div>
+  <a href="/ui/vanilla/classic" title="切回经典聊天界面">↩ 经典界面</a>
+  <button id="newchat">新对话</button>
+</header>
+
+<main>
+  <nav class="tabs" id="tabs"></nav>
+
+  <section class="center">
+    <div id="gateTop" style="display:none">
+      <div class="gate-hero">
+        <pre class="logo">██╗    ██╗██╗   ██╗██╗  ██╗
+██║    ██║██║   ██║╚██╗██╔╝
+██║ █╗ ██║██║   ██║ ╚███╔╝
+██║███╗██║██║   ██║ ██╔██╗
+╚███╔███╔╝╚██████╔╝██╔╝ ██╗
+ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝
+
+        ── 武 侠 R P G ──</pre>
+        <div class="gate-sub">江湖路远，剑未出鞘。少侠，从何而起？</div>
+        <div class="gate-meta">作者：可乐酸橙　版本：v0.9.8　<span id="gateSaveCnt"></span></div>
+        <div class="gate-hint">点上方按钮开新档，或读取存档续旧缘。</div>
+      </div>
+      <div class="gate-actions">
+        <button class="uibtn primary" id="btnCreate">＋ 创建角色</button>
+      </div>
+      <div id="gateSaves"></div>
+    </div>
+    <div id="panelTravel">
+      <div id="headband">
+        <div class="hb-loc">
+          <div class="region" id="hbRegion">—</div>
+          <div class="scene" id="hbScene">待 启 程</div>
+        </div>
+        <div class="hb-spacer"></div>
+        <div class="hb-steps" id="hbSteps">
+          <span class="stp" id="stp1">结算</span><span class="stp" id="stp2">判盘</span><span class="stp" id="stp3">运笔</span>
+        </div>
+        <div class="hb-save" id="hbSave"></div>
+        <div class="hb-time">
+          <div class="clock"><span class="icon" id="hbIcon">◐</span><span id="hbClock"></span></div>
+          <div class="cal" id="hbCal"></div>
+        </div>
+      </div>
+      <div id="waitPanel"><div class="wait-log"></div></div>
+      <div id="stage"><div id="stageIn">
+        <div class="stage-empty">江湖未启，落笔开篇。<br>与 GM 对话推进剧情后，此处呈现当前场景。</div>
+      </div></div>
+      <details id="travelLog"><summary></summary><div id="msgs"></div></details>
+      <footer id="composer">
+        <form id="form">
+          <textarea id="input" placeholder="落字成令…（Enter 发送，Shift+Enter 换行）" rows="1"></textarea>
+          <button id="send" type="submit">送出</button>
+        </form>
+        <div class="status" id="status"></div>
+      </footer>
+    </div>
+    <div id="panelCard"></div>
+  </section>
+
+  <aside class="party">
+    <div class="phead">当 前 队 伍<span class="slot-chip" id="pslotChip">slot —</span></div>
+    <div class="resrow">
+      <div class="res">体力<b id="resSta">—</b></div>
+      <div class="res">金钱<b id="resMoney">—</b></div>
+    </div>
+    <div id="pmembers"></div>
+  </aside>
+</main>
+
+<!-- ================= 战斗全屏模式 ================= -->
+<div id="battleScreen">
+  <div class="bhead">
+    <span class="bname"><em>⚔</em><span id="bName">遭遇战</span></span>
+    <span class="tag" id="bRound"></span>
+    <span class="tag" id="bState"></span>
+    <div class="spacer"></div>
+    <button id="bExit">退出战斗画面</button>
+  </div>
+  <div class="chain" id="bChain"></div>
+  <div class="bbody">
+    <section class="bfield">
+      <div class="bside-label enemy">敌 方</div>
+      <div class="formation" id="bEnemy"></div>
+      <div class="bspacer"></div>
+      <div class="formation" id="bAlly"></div>
+      <div class="bside-label ally">我 方</div>
+      <section class="bconsole" id="bConsole">
+        <div class="ckv"><span class="turn" id="bTurn"></span><span class="watch" id="bWatch"></span></div>
+        <div class="cgrid" id="bGrid"></div>
+      </section>
+    </section>
+    <!-- 战报栏已下线：战况全部走卡片/气泡/弹道/摇晃/浮字 -->
+  </div>
+  <div id="bEndMask" class="bmask"><div class="endcard" id="bEndCard"></div></div>
+</div>
+
+<!-- ================= 战前触发（exploration-battle-ui）浮层 ================= -->
+<div id="preFight" class="bmask">
+  <div class="endcard">
+    <div class="verdict">短 兵 相 接</div>
+    <div class="pf-line"><b>我方</b>　<span class="pf-ally">—</span></div>
+    <div class="pf-line"><span class="en">敌方</span>　<span class="pf-foe">—</span></div>
+    <div class="vsub">选择操控方式后开战</div>
+    <div class="pfbtns"></div>
+  </div>
+</div>
+
+<!-- 创建角色向导（三步，引擎直接建档，无自然语言交互） -->
+<div id="modCreate">
+  <div class="wiz">
+    <h2>人物创建</h2>
+    <div class="step" id="wizStep"></div>
+    <div id="wizBody"></div>
+    <div id="createErr"></div>
+    <div class="wnav">
+      <button class="uibtn" id="wizCancel">返回标题</button>
+      <div class="right">
+        <button class="uibtn" id="wizPrev" style="display:none">上一步</button>
+        <button class="uibtn primary" id="wizNext">下一步</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 功能弹窗（trade-buy/trade-sell/travel/inn，go 返回的子界面） -->
+<div id="modUi">
+  <div class="ui-card">
+    <div class="ui-head">
+      <h3 id="modUiTitle"></h3>
+      <button class="uibtn ui-close" id="modUiClose" title="返回游历">×</button>
+    </div>
+    <div id="modUiBody"></div>
+  </div>
+</div>
+
+
+<script src="/ui/vanilla/static/game-core.js"></script>
+<script src="/ui/vanilla/static/game-gate.js"></script>
+<script src="/ui/vanilla/static/game-modals.js"></script>
+<script src="/ui/vanilla/static/game-explore.js"></script>
+<script src="/ui/vanilla/static/game-battle.js"></script>
+<script src="/ui/vanilla/static/game-tabs.js"></script>
+<script src="/ui/vanilla/static/game-chat.js"></script>
+<script src="/ui/vanilla/static/game-wizard.js"></script>
+<script src="/ui/vanilla/static/game-boot.js"></script>
+</body>
+</html>

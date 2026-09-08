@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>demo · 战斗全屏界面</title>
+<style>
+  :root{
+    --bg:#0f0d0a; --panel:#1a1612; --panel2:#221c16; --ink:#e8dcc4; --ink-dim:#9a8c6e;
+    --accent:#c8a456; --accent2:#8a6a2a; --border:#3a2f22; --danger:#c45a4a; --ok:#7a9a5a;
+    --blue:#3a5a8a; --red:#8a4a3a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:
+      radial-gradient(900px 400px at 50% -150px,rgba(120,40,40,.14),transparent 60%),
+      var(--bg);
+    color:var(--ink);display:flex;flex-direction:column;overflow:hidden;
+    font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif}
+
+  /* ===== 顶栏 ===== */
+  header{flex:0 0 auto;display:flex;align-items:center;gap:16px;padding:10px 22px;
+    background:linear-gradient(180deg,#241a10,#15110d);border-bottom:1px solid var(--border)}
+  header .bname{font-size:17px;font-weight:600;letter-spacing:2px;color:var(--ink)}
+  header .bname em{color:var(--danger);font-style:normal;margin-right:8px}
+  header .tag{font-size:11.5px;color:var(--ink-dim);border:1px solid var(--border);
+    border-radius:10px;padding:1px 10px;letter-spacing:1px}
+  header .spacer{flex:1}
+  header a{color:var(--ink-dim);border:1px solid var(--border);padding:4px 10px;border-radius:6px;
+    font-size:12px;text-decoration:none}
+  header a:hover{color:var(--accent);border-color:var(--accent2)}
+
+  main{flex:1 1 auto;display:flex;min-height:0}
+
+  /* ===== 左：战场 ===== */
+  section.field{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;position:relative}
+  .side-label{font-size:12px;color:var(--ink-dim);letter-spacing:4px;text-align:center;margin:6px 0 2px}
+  .side-label.enemy{color:#c98f7a}
+  .side-label.ally{color:#9aa8c8}
+  .formation{display:flex;justify-content:center;gap:14px;padding:8px 12px;flex-wrap:wrap}
+
+  .bcard{width:158px;border:1px solid var(--border);border-radius:9px;background:var(--panel2);
+    padding:9px 11px 8px;position:relative;transition:all .25s;font-size:12px}
+  .bcard .bnm{font-size:14.5px;color:var(--accent);display:flex;align-items:baseline;gap:6px}
+  .bcard .bnm .crown{font-size:10px;color:var(--ink-dim)}
+  .bcard.enemy .bnm{color:#d99a7a}
+  .bars{margin-top:6px;display:flex;flex-direction:column;gap:4px}
+  .bar{position:relative;height:13px;background:#0c0a07;border:1px solid var(--border);border-radius:3px;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;transition:width .45s ease}
+  .bar.hp i{background:var(--red)}.bar.mp i{background:var(--blue)}
+  .bar.low i{background:#a83232;animation:lowPulse 1.6s infinite}
+  @keyframes lowPulse{50%{filter:brightness(1.5)}}
+  .bar span{position:absolute;left:6px;top:0;font-size:9.5px;line-height:13px;color:var(--ink)}
+  .sts{display:flex;flex-wrap:wrap;gap:3px;margin-top:6px;min-height:5px}
+  .stg{font-size:10px;border:1px solid var(--accent2);border-radius:7px;padding:0 6px;color:var(--accent)}
+  .stg.debuff{color:var(--danger);border-color:#6a3a34}
+  .stg.cd{color:var(--ink-dim);border-color:var(--border)}
+  .bcard.acting{border-color:var(--accent);box-shadow:0 0 18px rgba(200,164,86,.35);
+    transform:translateY(-3px)}
+  .bcard.acting::after{content:"◉ 行动中";position:absolute;top:-9px;left:50%;transform:translateX(-50%);
+    font-size:10px;color:#1a1208;background:var(--accent);border-radius:8px;padding:0 8px;letter-spacing:1px}
+  .bcard.targetable{border-color:var(--ok);cursor:pointer;animation:tPulse 1s infinite}
+  @keyframes tPulse{50%{box-shadow:0 0 16px rgba(122,154,90,.55)}}
+  .bcard.dead{opacity:.35;filter:grayscale(.8);transform:scale(.96)}
+  .bcard.dead::after{content:"✕ 败阵";position:absolute;top:-9px;left:50%;transform:translateX(-50%);
+    font-size:10px;color:#f3e3c0;background:#7a1f1f;border-radius:8px;padding:0 8px}
+  .bcard.low-hp{border-color:#6a3a34;background:linear-gradient(180deg,#2a1512,#221c16)}
+  .float{position:absolute;left:50%;top:-6px;transform:translateX(-50%);font-size:22px;font-weight:700;
+    pointer-events:none;z-index:5;animation:floatUp 1.1s ease-out forwards;
+    text-shadow:0 2px 6px rgba(0,0,0,.7)}
+  .float.dmg{color:#e06a55}.float.crit{color:#f0b03a;font-size:26px}
+  .float.heal{color:#8ac86a}
+  @keyframes floatUp{0%{opacity:0;transform:translate(-50%,6px)}15%{opacity:1}
+    100%{opacity:0;transform:translate(-50%,-34px)}}
+
+  /* 行动预告链（置顶横幅） */
+  .chain{display:flex;align-items:center;justify-content:center;gap:8px;padding:10px 24px;
+    flex:0 0 auto;
+    background:linear-gradient(90deg,#181310,#2c2010 22%,#2c2010 78%,#181310);
+    border-bottom:1px solid var(--accent2);overflow-x:auto;letter-spacing:1px}
+  .chain .clabel{font-size:12px;color:var(--accent);letter-spacing:3px;flex:0 0 auto;
+    border-right:1px solid var(--border);padding-right:14px;margin-right:6px}
+  .chain .node{display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 13px;
+    border:1px solid var(--border);border-radius:13px;color:var(--ink-dim);flex:0 0 auto;
+    transition:all .3s;background:rgba(0,0,0,.25)}
+  .chain .node i{font-style:normal;font-size:10.5px;color:var(--accent2);font-family:Consolas,monospace}
+  .chain .node.enemy{color:#c98f7a}
+  .chain .node.ally{color:#9aa8c8}
+  .chain .node.now{font-size:15px;font-weight:700;padding:6px 20px;color:#1a1208;
+    background:linear-gradient(180deg,#d8b466,#b8923c);border-color:var(--accent);
+    box-shadow:0 0 16px rgba(200,164,86,.55);animation:nowPulse 1.5s infinite}
+  .chain .node.now i{color:#1a1208}
+  @keyframes nowPulse{50%{box-shadow:0 0 26px rgba(200,164,86,.85)}}
+  .chain .node.dead{opacity:.35;text-decoration:line-through}
+  .chain .arrow{color:var(--accent2);font-size:13px;flex:0 0 auto}
+
+  .field-spacer{flex:1 1 auto;min-height:6px}
+
+  /* ===== 控制台 ===== */
+  section.console{flex:0 0 auto;border-top:1px solid var(--border);
+    background:linear-gradient(180deg,#1d1712,#15110d);padding:12px 22px 14px}
+  .ckv{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .ckv .turn{font-size:14px;letter-spacing:1px}
+  .ckv .turn b{color:var(--accent)}
+  .ckv .watch{font-size:11.5px;color:var(--ink-dim)}
+  .cgrid{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}
+  .cgroup{display:flex;flex-direction:column;gap:5px}
+  .cgroup .g-label{font-size:10.5px;color:var(--ink-dim);letter-spacing:2px}
+  .cgroup .g-cards{display:flex;gap:8px}
+  .cdiv{width:1px;background:var(--border);margin:2px 2px}
+  .skcard{width:150px;border:1px solid var(--accent2);border-radius:8px;background:var(--panel2);
+    padding:7px 10px;cursor:pointer;transition:all .15s;font-size:11.5px}
+  .skcard:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.4)}
+  .skcard .sn{font-size:13px;color:var(--accent);margin-bottom:3px}
+  .skcard .sp{color:var(--ink-dim);line-height:1.6}
+  .skcard.picked{border-color:var(--ok);box-shadow:0 0 12px rgba(122,154,90,.5)}
+  .skcard.empty{border:1px dashed var(--border);cursor:default;opacity:.4}
+  .skcard.empty:hover{transform:none;box-shadow:none}
+  .skcard.disabled{opacity:.45;cursor:not-allowed;border-color:var(--border)}
+  .skcard.disabled:hover{transform:none;box-shadow:none}
+  .skcard.disabled .sn{color:var(--ink-dim)}
+  .skcard .cdnote{color:var(--danger);font-size:10.5px}
+  .fbtns{display:flex;flex-direction:column;gap:6px;justify-content:center}
+  .fbtn{padding:7px 14px;font-size:12.5px;border:1px solid var(--border);border-radius:6px;
+    background:var(--panel2);color:var(--ink);cursor:pointer;letter-spacing:1px;font-family:inherit}
+  .fbtn:hover{border-color:var(--accent2);color:var(--accent)}
+  .fbtn.danger{color:var(--danger)}
+  .fbtn:disabled{opacity:.35;cursor:not-allowed}
+  .console.locked .skcard{opacity:.4;pointer-events:none}
+  .console.locked .fbtn{opacity:.4;pointer-events:none}
+
+  /* ===== 右：战报栏 ===== */
+  aside.blog{width:296px;flex:0 0 auto;background:var(--panel);border-left:1px solid var(--border);
+    display:flex;flex-direction:column;min-height:0}
+  .blog-title{flex:0 0 auto;font-size:12.5px;color:var(--accent);letter-spacing:3px;padding:12px 14px 8px;
+    border-bottom:1px solid var(--border)}
+  .blog-flow{flex:1 1 auto;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+  .rcard{border:1px solid var(--border);border-radius:8px;background:var(--panel2);padding:9px 12px;
+    font-size:12px;animation:chgIn .45s ease both}
+  .rcard.old{opacity:.5}
+  .rcard .rturn{font-size:10.5px;color:var(--ink-dim);letter-spacing:2px;margin-bottom:5px}
+  .rcard .lit{line-height:1.85;color:var(--ink)}
+  .rcard .lit b{color:var(--accent)}
+  .rcard .speak{color:#d9c79a;font-style:italic;margin-top:5px;line-height:1.7}
+  .rcard .nums{margin-top:6px;font-family:Consolas,monospace;font-size:11px;line-height:1.9}
+  .rcard .nums .dn{color:#e06a55}.rcard .nums .up{color:#8ac86a}.rcard .nums .dim{color:var(--ink-dim)}
+  @keyframes chgIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* 终局遮罩 */
+  #endMask{position:fixed;inset:0;background:rgba(8,6,4,.72);z-index:60;display:none;
+    align-items:center;justify-content:center;backdrop-filter:blur(2px)}
+  #endMask.show{display:flex}
+  .endcard{width:430px;background:var(--panel);border:1px solid var(--accent2);border-radius:12px;
+    padding:26px 28px;text-align:center;animation:chgIn .5s ease both}
+  .endcard .verdict{font-size:24px;letter-spacing:6px;color:var(--accent);margin-bottom:6px}
+  .endcard.lose .verdict{color:var(--danger)}
+  .endcard .vsub{font-size:12.5px;color:var(--ink-dim);margin-bottom:16px;line-height:1.8}
+  .exe-row{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:8px;
+    padding:8px 12px;margin:8px 0;font-size:13px;text-align:left}
+  .exe-row .en{font-size:14px;color:#d99a7a}
+  .exe-row .ec{flex:1;font-size:11.5px;color:var(--ink-dim)}
+  .ebtn{padding:4px 14px;font-size:12px;border:1px solid var(--border);border-radius:5px;
+    background:var(--panel2);color:var(--ink);cursor:pointer;font-family:inherit;letter-spacing:1px}
+  .ebtn.kill{color:var(--danger)}.ebtn.spare{color:var(--ok)}
+  .ebtn.on{border-color:var(--accent);background:var(--accent);color:#1a1208;font-weight:600}
+  #endGo{margin-top:14px;width:100%;padding:10px;border:none;border-radius:8px;
+    background:linear-gradient(180deg,#c8a456,#9a7830);color:#1a1208;font-size:14px;
+    font-weight:600;cursor:pointer;letter-spacing:3px}
+  #toastWrap{position:fixed;right:310px;bottom:16px;display:flex;flex-direction:column;gap:6px;z-index:120}
+  .toast{background:rgba(26,22,18,.94);border:1px solid var(--accent2);border-radius:6px;color:var(--ink);
+    font-size:12.5px;padding:6px 12px;opacity:0;transform:translateY(6px);transition:all .25s}
+  .toast.show{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<header>
+  <span class="bname"><em>⚔</em><span id="battleName">太湖口 · 夜战</span></span>
+  <span class="tag" id="roundTag">第 3 回合</span>
+  <span class="tag" id="stateTag" style="color:var(--ok)">进行中</span>
+  <div class="spacer"></div>
+  <span class="tag">demo · 战斗全屏（假数据）</span>
+  <a href="/static/demo-explore.html">→ 游历 demo</a>
+</header>
+
+<!-- 行动预告链：置顶醒目横幅 -->
+<div class="chain" id="chain"></div>
+
+<main>
+  <section class="field">
+    <div style="flex:0 0 auto">
+      <div class="side-label enemy">敌 方 · 太 湖 水 寨</div>
+      <div class="formation" id="enemyRow"></div>
+    </div>
+    <div class="field-spacer"></div>
+    <div style="flex:0 0 auto">
+      <div class="formation" id="allyRow"></div>
+      <div class="side-label ally">我 方</div>
+    </div>
+    <section class="console" id="console">
+      <div class="ckv">
+        <span class="turn" id="turnLabel">▶ 轮到 <b>沈听雪</b></span>
+        <span class="watch" id="watchLabel"></span>
+      </div>
+      <div class="cgrid" id="consoleGrid"></div>
+    </section>
+  </section>
+
+  <aside class="blog">
+    <div class="blog-title">战 报</div>
+    <div class="blog-flow" id="blogFlow"></div>
+  </aside>
+</main>
+
+<div id="endMask"><div class="endcard" id="endCard"></div></div>
+<div id="toastWrap"></div>
+
+<script>
+/* ================= 假数据（对齐 battle-ui 结构） ================= */
+const Chars={
+  "水寨主":{side:"enemy",title:"寨主",hp:48,hpmax:80,mp:30,mpmax:60,
+    st:[{n:"破防",d:1},{n:"反击架势",d:0}],cd:{},skill:{name:"劈风刀",pow:1.5,cost:10}},
+  "水鬼甲":{side:"enemy",title:"喽啰",hp:62,hpmax:70,mp:12,mpmax:40,
+    st:[{n:"中毒·2回合",d:1}],cd:{},skill:{name:"分水刺",pow:1.3,cost:8}},
+  "水鬼乙":{side:"enemy",title:"喽啰",hp:0,hpmax:35,mp:0,mpmax:20,st:[],cd:{},skill:{name:"分水刺",pow:1.2,cost:8}},
+  "沈听雪":{side:"ally",me:true,title:"你",hp:80,hpmax:95,mp:41,mpmax:60,
+    st:[{n:"运功·太乙",d:0}],cd:{"回风拂柳刀":1},
+    skills:[
+      {name:"太乙玄门剑·贰",pow:1.6,cost:12,cd:0,fx:"剑出三分，太乙归一"},
+      {name:"回风拂柳刀",pow:1.2,cost:8,cd:2,fx:"刀随身转，柳随风回"},
+      null,null],
+    items:[{name:"小还丹",cnt:2,use:"heal",val:80,desc:"回复气血80"},
+           {name:"石灰粉",cnt:1,use:"debuff",val:"致盲·2回合",desc:"致盲敌方2回合"}]},
+  "叶瞬光":{side:"ally",title:"剑客",hp:55,hpmax:78,mp:44,mpmax:50,
+    st:[{n:"破防 2回合",d:1}],cd:{},
+    skills:[
+      {name:"百缠手",pow:1.3,cost:8,cd:0,fx:"缠劲入肘，连绵不绝"},
+      {name:"扫堂腿",pow:1.1,cost:5,cd:0,fx:"扫断下盘"},
+      null,null]},
+  "码头脚夫老周":{side:"ally",title:"向导",hp:21,hpmax:60,mp:5,mpmax:20,st:[],cd:{},
+    skills:[{name:"王八拳",pow:1.0,cost:0,cd:0,fx:"乱拳打死老师傅"},null,null,null]},
+};
+let order=["沈听雪","水鬼甲","叶瞬光","水寨主","码头脚夫老周"];   // 行动预告（loop）
+let oi=0, round=3, ended=false, picked=null;
+const alive=c=>c.hp>0;
+const nextAlive=()=>{for(let k=0;k<order.length;k++){oi=(oi+1)%order.length;if(alive(Chars[order[oi]]))return;}};
+
+const $=id=>document.getElementById(id);
+const el=(t,c,txt)=>{const e=document.createElement(t);if(c)e.className=c;if(txt!=null)e.textContent=txt;return e;}
+function toast(msg){const w=$("toastWrap");const t=el("div","toast",msg);w.appendChild(t);
+  requestAnimationFrame(()=>t.classList.add("show"));
+  setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),300);},2200);}
+
+/* ================= 卡片渲染 ================= */
+function renderFormation(){
+  for(const [rowId,side] of [["enemyRow","enemy"],["allyRow","ally"]]){
+    const row=$(rowId);row.innerHTML="";
+    for(const [nm,c] of Object.entries(Chars)){
+      if(c.side!==side)continue;
+      const card=el("div","bcard "+side+(c.me?" me":""));
+      card.id="bc_"+nm;
+      if(!alive(c))card.classList.add("dead");
+      else{
+        if(c.side==="ally"&&c.hp/c.hpmax<0.35)card.classList.add("low-hp");
+        if(order[oi]===nm&&!ended)card.classList.add("acting");
+        if(picked&&picked.range===side)card.classList.add("targetable");
+      }
+      const top=el("div","bnm");top.appendChild(el("span",null,nm));
+      top.appendChild(el("span","crown",c.title));card.appendChild(top);
+      const bars=el("div","bars");
+      const hpP=Math.max(0,c.hp/c.hpmax*100),mpP=Math.max(0,c.mp/c.mpmax*100);
+      bars.innerHTML=
+        `<div class="bar hp${alive(c)&&hpP<35?" low":""}"><i style="width:${hpP}%"></i><span>气血 ${c.hp}/${c.hpmax}</span></div>
+         <div class="bar mp"><i style="width:${mpP}%"></i><span>内力 ${c.mp}/${c.mpmax}</span></div>`;
+      card.appendChild(bars);
+      const sts=el("div","sts");
+      for(const s of c.st)sts.appendChild(el("span","stg"+(s.d?" debuff":""),s.n));
+      for(const [k,v] of Object.entries(c.cd||{}))sts.appendChild(el("span","stg cd","冷却:"+k));
+      card.appendChild(sts);
+      if(picked&&picked.range===side&&alive(c)){
+        card.onclick=()=>resolveAction(nm);
+      }
+      row.appendChild(card);
+    }
+  }
+}
+
+/* ================= 行动预告链 ================= */
+function renderChain(){
+  const ch=$("chain");ch.innerHTML="";
+  ch.appendChild(el("span","clabel","行 动 预 告"));
+  let seq=0,markedNow=false;
+  for(let k=0;k<order.length;k++){
+    const idx=(oi+k)%order.length,nm=order[idx],c=Chars[nm];
+    const dead=!alive(c);
+    let cls="node "+(c.side==="enemy"?"enemy":"ally");
+    let badge="✕";
+    if(dead){cls+=" dead";}
+    else{seq++;badge=seq;
+      if(!markedNow){cls+=" now";markedNow=true;}}
+    const nd=el("div",cls);
+    nd.innerHTML=`<i>${badge}</i>${nm}`;
+    ch.appendChild(nd);
+    if(k<order.length-1)ch.appendChild(el("span","arrow","→"));
+  }
+}
+
+/* ================= 控制台 ================= */
+function renderConsole(){
+  const cur=order[oi],c=Chars[cur];
+  const isPlayer=c.side==="ally";
+  $("turnLabel").innerHTML=ended?"—— 战局已终":
+    (isPlayer?`▶ 轮到 <b>${cur}</b>`:`◌ <b>${cur}</b> 行动中…`);
+  $("console").classList.toggle("locked",!isPlayer||!!picked||ended);
+  const g=$("consoleGrid");g.innerHTML="";
+  if(!isPlayer||ended)return;
+  /* 武学槽组 */
+  const gSk=el("div","cgroup");gSk.appendChild(el("span","g-label","武学（携带 ≤4）"));
+  const skCards=el("div","g-cards");
+  (c.skills||[null,null,null,null]).forEach(s=>{
+    if(!s){const e0=el("div","skcard empty");e0.textContent="（空槽）";skCards.appendChild(e0);return;}
+    const d=el("div","skcard");
+    const cooling=(c.cd||{})[s.name]>0;
+    const noMp=c.mp<s.cost;
+    if(cooling||noMp)d.classList.add("disabled");
+    if(picked&&picked.type==="skill"&&picked.skill===s.name)d.classList.add("picked");
+    d.appendChild(el("div","sn","◆ "+s.name));
+    d.appendChild(el("div","sp",`威力${s.pow} ｜ 内力${s.cost}${s.cd?" ｜ 冷却"+s.cd:""}`));
+    d.appendChild(el("div","sp",s.fx));
+    if(cooling)d.appendChild(el("div","cdnote",`冷却剩 ${c.cd[s.name]} 回合`));
+    if(noMp)d.appendChild(el("div","cdnote","内力不足"));
+    if(!cooling&&!noMp)d.onclick=()=>pickTarget("skill",s);
+    skCards.appendChild(d);
+  });
+  gSk.appendChild(skCards);g.appendChild(gSk);
+  /* 物品组 */
+  if(c.items){
+    g.appendChild(el("div","cdiv"));
+    const gIt=el("div","cgroup");gIt.appendChild(el("span","g-label","战斗携带物品"));
+    const itCards=el("div","g-cards");
+    for(const it of c.items){
+      const d=el("div","skcard"+(it.use==="heal"?"":" "));
+      d.appendChild(el("div","sn","▤ "+it.name+" ×"+it.cnt));
+      d.appendChild(el("div","sp",it.desc));
+      d.appendChild(el("div","sp",it.use==="heal"?"对我方":"对敌方"));
+      if(picked&&picked.type==="item"&&picked.item===it.name)d.classList.add("picked");
+      d.onclick=()=>pickTarget("item",it);
+      itCards.appendChild(d);
+    }
+    gIt.appendChild(itCards);g.appendChild(gIt);
+  }
+  /* 功能钮 */
+  g.appendChild(el("div","cdiv"));
+  const fb=el("div","fbtns");
+  const mk=(label,fn,danger)=>{const b=el("button","fbtn"+(danger?" danger":""),label);b.onclick=fn;fb.appendChild(b);};
+  mk("休息（回内力10%）",()=>actRest());
+  mk("逃跑",()=>actFlee());
+  mk("认输",()=>{endGame(false,"你方拱手认输，对方按住了兵器。");},true);
+  mk("查看人物",()=>toast("（demo 占位）此钮正式版经聊天通道拉取人物信息卡"));
+  g.appendChild(fb);
+  /* 取消选择 */
+  if(picked)g.appendChild(Object.assign(el("button","fbtn","取消选择"),{onclick:()=>{picked=null;renderAll();}}));
+}
+
+/* ================= 选目标 → 结算 ================= */
+function pickTarget(type,obj){
+  const range=(type==="skill"||(type==="item"&&obj.use==="debuff"))?"enemy":"ally";
+  if(type==="skill"&&obj.range==="敌方全体"){resolveAction(null,{type,obj});return;}
+  picked={type,skill:type==="skill"?obj.name:null,item:type==="item"?obj.name:null,obj,range};
+  renderAll();
+  toast(`选择目标（${range==="enemy"?"点敌方卡":"点我方卡"}）`);
+}
+function resolveAction(target){
+  if(!picked)return;
+  const actor=order[oi],a=Chars[actor],tgt=Chars[target];
+  const p=picked;picked=null;
+  if(p.type==="skill"){
+    const s=p.obj;a.mp-=s.cost;if(s.cd)a.cd[s.name]=s.cd;
+    const crit=Math.random()<0.16;
+    let dmg=Math.round(s.pow*20+Math.random()*8)*(crit?1.5:1);
+    dmg=Math.round(dmg);
+    applyDamage(target,dmg,crit,`${actor}凝神运气，一式【${s.name}】递出，${s.fx}，直取${target}。`,
+      crit?`${target}闷哼一声，伤得不轻！`:null);
+  }else if(p.type==="item"){
+    const it=p.obj;it.cnt--;
+    if(it.use==="heal"){
+      const real=Math.min(tgt.hpmax-tgt.hp,it.val);tgt.hp+=real;
+      floatText(target,"+"+real,"heal");
+      addLog(`${actor}摸出一粒【${it.name}】纳入${target}口中，药力化开。`,null,
+        [[`${target} 气血 ${tgt.hp-real}→${tgt.hp}`,"up"]]);
+    }else{
+      tgt.st.push({n:it.val,d:1});
+      addLog(`${actor}扬手撒出一把【${it.name}】，${target}掩面不及，顿时涕泪横流。`,
+        `“卑鄙！”${target}怒喝。`,[["", "dim"],[`${target} 获得【${it.val}】`,"dim"]]);
+    }
+  }
+  endTurn();
+}
+function applyHealed(){}
+function applyDamage(target,dmg,crit,lit,speak){
+  const c=Chars[target],before=c.hp;
+  c.hp=Math.max(0,c.hp-dmg);
+  floatText(target,(crit?"暴击 ":"")+"-"+dmg,crit?"crit":"dmg");
+  addLog(lit,speak,[[`${target} 气血 ${before}→${c.hp}`,"dn"]]);
+  if(c.hp<=0){
+    addLog(`${target}眼前一黑，扑倒在地，再无反手之力。`,null,[[`${target} 败阵`,"dim"]]);
+    checkEnd();
+  }
+}
+function actRest(){
+  const cur=order[oi],c=Chars[cur],rec=Math.round(c.mpmax*0.1),bef=c.mp;
+  c.mp=Math.min(c.mpmax,c.mp+rec);
+  addLog(`${cur}收势调息，内力于周天徐徐回笼。`,null,[[`${cur} 内力 ${bef}→${c.mp}`,"up"]]);
+  endTurn();
+}
+function actFlee(){
+  const ok=Math.random()<0.5;const cur=order[oi];
+  if(ok){
+    addLog(`${cur}虚晃一招，纵身跃出战圈，穿出芦苇荡没入夜色。`,null,[[`${cur} 逃走`,"dim"]]);
+    Chars[cur].hp=-1;/*demo：以 -1 表逃走（不可选为目标）*/
+    toast("逃跑判定成功");
+    checkEnd();
+  }else{
+    addLog(`${cur}欲走，却被对方抢步封住去路，只得折回。`,null,[[`逃跑判定失败——未能脱身`,"dim"]]);
+    toast("逃跑判定失败——错失本回合");
+  }
+  endTurn();
+}
+
+/* ================= AI 回合 ================= */
+function aiTurn(){
+  if(ended)return;
+  const nm=order[oi],c=Chars[nm];
+  if(c.side==="ally"||!alive(c)){endTurn(true);return;}
+  const foes=Object.entries(Chars).filter(([n,x])=>x.side==="ally"&&alive(x));
+  if(!foes.length){checkEnd();return;}
+  const [tnm]=foes[Math.floor(Math.random()*foes.length)];
+  const s=c.skill;
+  const dmg=Math.round(s.pow*16+Math.random()*8);
+  applyDamage(tnm,dmg,false,`${nm}一声唿哨，【${s.name}】劈风而至，扫向${tnm}。`,null);
+  if(!ended)setTimeout(()=>endTurn(),650);
+}
+
+/* ================= 回合推进 ================= */
+function endTurn(fromAi){
+  fadeOldLogs();
+  if(ended){renderAll();return;}
+  nextAlive();
+  if(order[oi]===order[0]){round++;$("roundTag").textContent=`第 ${round} 回合`;}
+  for(const [nm,c] of Object.entries(Chars)){
+    if(nm===order[oi]&&c.cd){for(const k of Object.keys(c.cd)){c.cd[k]--;if(c.cd[k]<=0)delete c.cd[k];}}
+  }
+  renderAll();
+  const c=Chars[order[oi]];
+  if(c.side==="enemy"&&!ended)setTimeout(aiTurn,750);
+}
+function checkEnd(){
+  const eLeft=Object.values(Chars).some(c=>c.side==="enemy"&&alive(c));
+  const aLeft=Object.values(Chars).some(c=>c.side==="ally"&&alive(c));
+  if(!eLeft)endGame(true);
+  else if(!aLeft)endGame(false,"你方尽数倒地，夜风卷走了最后一声兵刃相击。");
+}
+
+/* ================= 战报 ================= */
+function addLog(lit,speak,nums){
+  const flow=$("blogFlow");
+  const card=el("div","rcard");
+  card.appendChild(el("div","rturn","— 第 "+round+" 回合 —"));
+  const l=el("div","lit");l.innerHTML=lit.replace(/【(.+?)】/g,'<b>【$1】</b>');card.appendChild(l);
+  if(speak){card.appendChild(el("div","speak",speak));}
+  if(nums&&nums.length){const n=el("div","nums");
+    for(const [t,cls] of nums)n.appendChild(el("div",cls,t));
+    card.appendChild(n);}
+  flow.appendChild(card);flow.scrollTop=flow.scrollHeight;
+}
+function fadeOldLogs(){
+  const cards=$("blogFlow").querySelectorAll(".rcard");
+  cards.forEach((c,i)=>{if(i<cards.length-3)c.classList.add("old");});
+}
+
+/* ================= 飘字 ================= */
+function floatText(nm,txt,cls){
+  const card=$("bc_"+nm);if(!card)return;
+  const f=el("div","float "+cls,txt);card.appendChild(f);
+  setTimeout(()=>f.remove(),1150);
+}
+
+/* ================= 终局 ================= */
+function endGame(win,loseText){
+  if(ended)return;ended=true;
+  $("stateTag").textContent=win?"我方胜":"我方败";
+  $("stateTag").style.color=win?"var(--ok)":"var(--danger)";
+  renderAll();
+  const mask=$("endMask"),card=$("endCard");
+  card.className="endcard"+(win?"":" lose");
+  card.innerHTML=`<div class="verdict">${win?"大 获 全 胜":"一 败 涂 地"}</div>`;
+  if(win){
+    card.innerHTML+=`<div class="vsub">敌方尽数败阵。处置权在你——逐人裁定，杀放由心。<br>（正式版：此选择经聊天通道交 GM 落盘后返回游历）</div>`;
+    const fallen=Object.entries(Chars).filter(([n,c])=>c.side==="enemy"&&!alive(c));
+    const choices={};
+    for(const [nm] of fallen){
+      const row=el("div","exe-row");
+      row.appendChild(el("span","en",nm));
+      row.appendChild(el("span","ec","倒地不起，气息尚存"));
+      const kill=el("button","ebtn kill","杀"),spare=el("button","ebtn spare","放");
+      const pick=v=>{choices[nm]=v;
+        kill.classList.toggle("on",v==="杀");spare.classList.toggle("on",v==="放");
+        card.querySelectorAll(".exe-row .ebtn.on");maybeGo();};
+      kill.onclick=()=>pick("杀");spare.onclick=()=>pick("放");
+      row.appendChild(kill);row.appendChild(spare);card.appendChild(row);
+    }
+    function maybeGo(){
+      if(Object.keys(choices).length!==fallen.length)return;
+      if(card.querySelector("#endGo"))return;
+      const go=el("button",null,"镌刻此局 · 返回游历");go.id="endGo";
+      go.onclick=()=>{toast("已裁定："+JSON.stringify(choices));setTimeout(()=>location.href="/static/demo-explore.html",900);};
+      card.appendChild(go);
+    }
+  }else{
+    card.innerHTML+=`<div class="vsub">${loseText}</div>`;
+    const go=el("button",null,"忍痛退席 · 返回游历");go.id="endGo";
+    go.onclick=()=>location.href="/static/demo-explore.html";
+    card.appendChild(go);
+  }
+  mask.classList.add("show");
+}
+
+/* ================= 预填战报 & 启动 ================= */
+function renderAll(){renderFormation();renderChain();renderConsole();}
+function prefill(){
+  addLog("沈听雪清叱一声，【太乙玄门剑】剑光如水银泻地，直取水鬼乙胸前要穴。",
+    "“好快的剑！”水寨主不由得喝了一声彩。",
+    [["水鬼乙 气血 22→0","dn"],["沈听雪 内力 53→41","dim"]]);
+  addLog("水鬼乙眼前一黑，扑倒在地，再无反手之力。",null,[["水鬼乙 败阵","dim"]]);
+  addLog("水鬼甲挺刺抢攻，【分水刺】毒辣的寒芒直取叶瞬光下盘。",null,
+    [["叶瞬光 气血 63→55","dn"]]);
+  fadeOldLogs();
+}
+prefill();
+renderAll();
+</script>
+</body>
+</html>

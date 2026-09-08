@@ -1,0 +1,8 @@
+# 武侠RPG dsh 插件的 bundle 层：把 host 半边插入 loader tree。
+# 声明了本层（package.json dsh.bundle.patch）后，`dsh plugin add` 才会把
+# wuxia-rpg-dsh 加入 profile 的 dsh.profile.bundles，boot 时加载 host 半边，
+# 进而自动启动 Skill 内共享 engine service；client 半边由 client-modules 扫描本 entry 发现。
+
+- insert:
+    - id: wuxia-rpg
+      name: wuxia-rpg-dsh
