@@ -22,7 +22,7 @@
 │   ├── references/         # GM 规则、数据结构、战斗规则与 Markdown UI
 │   ├── assets/data/        # 角色、武学、物品、状态、阵营与地图基线数据
 │   └── scripts/            # go / judge / check / query 等引擎入口
-├── web/                    # 标准库 HTTP/SSE 服务与原生 JavaScript Web UI
+├── web/                    # 标准库 HTTP/SSE 服务与原生、React Web UI
 ├── agent/                  # 纯 Python 标准库的 agent-lite 底座
 ├── dsh-plugin/             # DSH Host 工具、隐藏命令与 Client UI
 ├── dsh-preset/wuxia/       # 可移植武侠 GM Preset
@@ -30,6 +30,8 @@
 ├── install.sh              # DSH 插件一键安装脚本
 └── release.sh              # 完整套件打包脚本
 ```
+
+`wuxia-rpg/assets/data/` 是发布和内容编辑的唯一权威数据源；`backup/history/` 中的数据目录仅作历史归档，不参与运行或发布。
 
 存档默认写入 `~/.wuxia/save/slot_<N>/`，可通过环境变量修改。
 

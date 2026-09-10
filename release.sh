@@ -20,7 +20,7 @@ trap cleanup EXIT
 command -v python3 >/dev/null 2>&1 || { echo "错误：未找到 python3" >&2; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "错误：未找到 npm" >&2; exit 1; }
 
-echo "==> [1/7] 安装并锁定 DSH 构建依赖"
+echo "==> [1/8] 安装并锁定 DSH 构建依赖"
 if ! (cd "$ROOT/dsh-plugin" && npm ci) >"$BUILD_LOG" 2>&1; then
   echo "错误：DSH 插件依赖安装失败" >&2
   python3 - "$BUILD_LOG" <<'PY' >&2
@@ -31,7 +31,7 @@ PY
   exit 1
 fi
 
-echo "==> [2/7] 构建并测试 DSH 插件"
+echo "==> [2/8] 构建并测试 DSH 插件"
 if ! (cd "$ROOT/dsh-plugin" && npm run build && npm test) >"$BUILD_LOG" 2>&1; then
   echo "错误：DSH 插件构建或测试失败" >&2
   python3 - "$BUILD_LOG" <<'PY' >&2
@@ -42,7 +42,7 @@ PY
   exit 1
 fi
 
-echo "==> [3/7] 安装依赖并构建 Web React"
+echo "==> [3/8] 安装依赖并构建 Web React"
 if ! (cd "$ROOT/web/ui/react" && npm ci && npm run build) >"$BUILD_LOG" 2>&1; then
   echo "错误：Web React 依赖安装、类型检查或构建失败" >&2
   python3 - "$BUILD_LOG" <<'PY' >&2
@@ -53,13 +53,19 @@ PY
   exit 1
 fi
 
-echo "==> [4/7] 校验基线数据完整性"
+echo "==> [4/8] 执行 Python 完整回归"
+if ! python3 "$ROOT/wuxia-rpg/scripts/tests/run_all_tests.py"; then
+  echo "错误：Python 完整回归失败" >&2
+  exit 1
+fi
+
+echo "==> [5/8] 校验基线数据完整性"
 if ! python3 "$ROOT/wuxia-rpg/scripts/validate_data.py"; then
   echo "错误：基线数据完整性校验失败" >&2
   exit 1
 fi
 
-echo "==> [5/7] 组装发布目录"
+echo "==> [6/8] 组装发布目录"
 python3 - "$ROOT" "$STAGE" <<'PY'
 import shutil
 import sys
@@ -68,16 +74,16 @@ from pathlib import Path
 root, stage = map(Path, sys.argv[1:])
 
 COMMON_IGNORES = {
-    "__pycache__", "*.pyc", ".DS_Store", "node_modules", ".git",
+    "__pycache__", ".DS_Store", "node_modules", ".git",
     ".sessions.json", "save",
 }
 
 def ignore(directory, names):
     ignored = set()
     for name in names:
-        if name in {"__pycache__", ".DS_Store", "node_modules", ".git", ".sessions.json"}:
+        if name in COMMON_IGNORES:
             ignored.add(name)
-        elif name.endswith(".pyc"):
+        elif name.endswith((".pyc", ".tsbuildinfo")):
             ignored.add(name)
     current = Path(directory)
     if current == root / "wuxia-rpg" / "scripts" and "tmp" in names:
@@ -97,7 +103,7 @@ for name in ("config.json", "install.sh", "README.md"):
     shutil.copy2(root / name, stage / name)
 PY
 
-echo "==> [6/7] 校验发布包可移植性"
+echo "==> [7/8] 校验发布包可移植性"
 python3 - "$STAGE" "$ROOT" <<'PY'
 import sys
 from pathlib import Path
@@ -122,6 +128,17 @@ missing = [str(path.relative_to(root)) for path in need if not path.is_file()]
 if missing:
     raise SystemExit("错误：发布包缺少 " + ", ".join(missing))
 
+generated_names = {".sessions.json", "__pycache__", "node_modules"}
+generated = []
+for path in root.rglob("*"):
+    relative = path.relative_to(root)
+    if any(part in generated_names for part in relative.parts):
+        generated.append(str(relative))
+    elif path.is_file() and path.name.endswith((".pyc", ".tsbuildinfo")):
+        generated.append(str(relative))
+if generated:
+    raise SystemExit("错误：发布包仍含运行或生成文件\n  " + "\n  ".join(generated))
+
 forbidden = (
     str(source_root),
     str(Path.home().resolve()),
@@ -142,7 +159,7 @@ if hits:
     raise SystemExit("错误：发布包仍含本机依赖\n  " + "\n  ".join(hits))
 PY
 
-echo "==> [7/7] 生成 $ZIP"
+echo "==> [8/8] 生成 $ZIP"
 python3 - "$STAGE" "$ZIP" "$PKG_NAME" <<'PY'
 import sys
 from pathlib import Path

@@ -3,7 +3,19 @@
   "server": {
     "host": "127.0.0.1",
     "port": 8000,
-    "frontend": "old"
+    "frontend": "old",
+    "limits": {
+      "max_sessions": 50,
+      "session_ttl_seconds": 7200,
+      "chat_body_max_bytes": 65536,
+      "message_max_chars": 32768,
+      "engine_body_max_bytes": 2000000,
+      "json_max_depth": 32,
+      "read_timeout_seconds": 10,
+      "max_concurrent_requests": 16,
+      "chat_rate_per_minute": 60,
+      "session_create_rate_per_minute": 10
+    }
   },
   "paths": {
     "save_dir": "",
