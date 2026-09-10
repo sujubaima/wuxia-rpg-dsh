@@ -122,7 +122,7 @@ async function engineGo(actions,slot){
 
 /* 测试档：角色名「演武场主」——查到即复用，查不到才建（建一次即可，后同复用） */
 async function ensureTestSlot(){
-  const all=await engineGo([{"类型":"开始游戏"}]);
+  const all=await engineGo([{"类型":"开始游戏"}],0);
   const found=(all.存档列表||[]).find(s=>(s.角色名||'')==='演武场主');
   if(found){TEST_SLOT=found.slot;}
   else{
@@ -135,7 +135,7 @@ async function ensureTestSlot(){
       "武学":[{"名称":"百缠手","等级":1}],"携带技能":["百缠手"],
       "携带物品":[],"运转心法":null,
       "装备":{"武器1":null,"武器2":null,"护甲":null,"饰品":null,"冠巾":null},
-      "物品":[],"人设":"演武场主持，非江湖人。"}}]);
+      "物品":[],"人设":"演武场主持，非江湖人。"}}],all.next_slot);
     TEST_SLOT=(c.结算||[]).find(x=>x.新建slot)?.新建slot||0;
   }
   $('slotNote').textContent=TEST_SLOT?('测试档 slot '+TEST_SLOT):'测试档创建失败';

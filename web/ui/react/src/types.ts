@@ -8,6 +8,8 @@ export interface EngineResult {
   错误?: string
   error?: string
   槽位?: number
+  next_slot?: number
+  错误码?: string
   删除槽位?: number
   当前位置?: string
   时段?: string

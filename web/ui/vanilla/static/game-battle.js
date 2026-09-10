@@ -577,7 +577,8 @@ async function battleAct(action){
   lockConsoleNow();
   let enterRet=null;
   try{
-    const d=await engineGo([action]);
+    let d=await engineGo([action]);
+    if(d.状态冲突==='go_already_committed'&&d.go_result&&typeof d.go_result==='object'&&!Array.isArray(d.go_result))d=d.go_result;
     if(d.错误){addSysLine('战斗操控未成功：'+d.错误,{long:true});return;}
     if(d.界面==='battle-end-ui'){
       enterRet=enterBattle(d);

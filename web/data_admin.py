@@ -24,7 +24,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(HERE, "..", "wuxia-rpg", "scripts")
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
-import dao as dq  # noqa: E402
+from common import dao as dq  # noqa: E402
+from atomic_io import atomic_write_text  # noqa: E402
 
 # 备份目录跟着 dao 的数据根走，与引擎同源；data_admin 放置位置无关
 BACKUP_DIR = os.path.join(dq.DATA_DIR, ".backups")
@@ -66,6 +67,17 @@ def list_entries(kind):
     return out
 
 
+def _backup_existing(existing, kind, name, deleted=False):
+    """把现有数据原子备份到 assets/data/.backups/。"""
+    target_dir = os.path.join(BACKUP_DIR, kind)
+    os.makedirs(target_dir, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    suffix = ".deleted.json" if deleted else ".json"
+    backup = os.path.join(target_dir, f"{name}.{ts}{suffix}")
+    with open(existing, encoding="utf-8") as file:
+        atomic_write_text(backup, file.read())
+
+
 def backup_then_save(kind, record):
     """保存前把旧文件备份到 assets/data/.backups/<kind>/<name>.<ts>.json，再 upsert。"""
     name = record.get("名称")
@@ -73,14 +85,8 @@ def backup_then_save(kind, record):
         return False, "记录缺少「名称」字段"
     existing = dq._scan_kind(kind).get(name)
     if existing and os.path.exists(existing):
-        os.makedirs(os.path.join(BACKUP_DIR, kind), exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        bak = os.path.join(BACKUP_DIR, kind, f"{name}.{ts}.json")
         try:
-            with open(existing, encoding="utf-8") as f:
-                old = f.read()
-            with open(bak, "w", encoding="utf-8") as f:
-                f.write(old)
+            _backup_existing(existing, kind, name)
         except OSError:
             pass
     dq.upsert(kind, record)
@@ -216,14 +222,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": f"未找到{kind}【{name}】"}, 404)
                 return
             # 删前备份
-            os.makedirs(os.path.join(BACKUP_DIR, kind), exist_ok=True)
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            bak = os.path.join(BACKUP_DIR, kind, f"{name}.{ts}.deleted.json")
             try:
-                with open(existing, encoding="utf-8") as f:
-                    old = f.read()
-                with open(bak, "w", encoding="utf-8") as f:
-                    f.write(old)
+                _backup_existing(existing, kind, name, deleted=True)
             except OSError:
                 pass
             dq.delete(kind, name)

@@ -21,6 +21,7 @@ async function loadGateSaves(){
   const d=await fetchUi({"类型":"开始游戏"});
   box.innerHTML='';
   const saves=d.存档列表||[];
+  document.getElementById('gateVersion').textContent=d.版本||'0.0.0';
   document.getElementById('gateSaveCnt').textContent=`存档：${saves.length} 个`;
   if(!saves.length){
     const ph=el('div','ph','尚无存档可续，在下方描述你的角色开创新篇。');

@@ -1,3 +1,4 @@
+import { closeSession } from '../api'
 import { useGameStore } from '../store'
 
 export function Header() {
@@ -6,6 +7,7 @@ export function Header() {
   const newChat = () => {
     if (busy) return
     if (sessionId && !confirm('开新一卷？当前对话将不再续接。')) return
+    void closeSession(sessionId)
     useGameStore.setState({ sessionId: '', messages: [] })
     sessionStorage.removeItem('wuxia_sid')
     sessionStorage.removeItem('wuxia_log')

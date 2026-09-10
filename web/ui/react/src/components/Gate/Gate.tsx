@@ -50,6 +50,7 @@ export function Gate() {
   const gateMode = useGameStore(s => s.gateMode)
   const gateSaves = useGameStore(s => s.gateSaves)
   const gateSaveCnt = useGameStore(s => s.gateSaveCnt)
+  const gateVersion = useGameStore(s => s.gateVersion)
   const gateLoading = useGameStore(s => s.gateLoading)
   const openWizard = useGameStore(s => s.openWizard)
   if (!gateMode) return null
@@ -66,7 +67,7 @@ export function Gate() {
 
         ── 武 侠 R P G ──`}</pre>
         <div className="gate-sub">江湖路远，剑未出鞘。少侠，从何而起？</div>
-        <div className="gate-meta">作者：可乐酸橙　版本：v0.9.8　<span>存档：{gateSaveCnt} 个</span></div>
+        <div className="gate-meta">作者：可乐酸橙　版本：v{gateVersion}　<span>存档：{gateSaveCnt} 个</span></div>
         <div className="gate-hint">点上方按钮开新档，或读取存档续旧缘。</div>
       </div>
       <div className="gate-actions">

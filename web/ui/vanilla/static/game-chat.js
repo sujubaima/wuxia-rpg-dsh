@@ -2,6 +2,12 @@
 let sessionId=sessionStorage.getItem('wuxia_sid')||'';
 let busy=false;
 
+function closeSession(sid){
+  if(!sid)return;
+  fetch('/api/session/close',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({session_id:sid})}).catch(()=>{});
+}
+
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function renderInline(s){
   s=esc(s);
@@ -175,6 +181,7 @@ $input.addEventListener('input',()=>{$input.style.height='auto';$input.style.hei
 $new.addEventListener('click',()=>{
   if(busy)return;
   if(sessionId&&!confirm('开新一卷？当前对话将不再续接。'))return;
+  closeSession(sessionId);
   sessionId='';sessionStorage.removeItem('wuxia_sid');sessionStorage.removeItem(LOG_KEY);
   $msgs.innerHTML='';$input.focus();
 });

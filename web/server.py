@@ -24,11 +24,21 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from atomic_io import atomic_write_json
 from engine_client import EngineClient, EngineClientError
+from resource_limits import (
+    AgentSessionPool,
+    RequestLimitError,
+    SessionBusyError,
+    SessionCapacityError,
+    SlidingWindowLimiter,
+    read_json_object,
+)
 from wuxia_tools import WEB_SKILL_USAGE_NOTE, build_wuxia_registry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # cc-game 根
@@ -60,6 +70,36 @@ BACKEND = os.environ.get("LLM_BACKEND", "llm").strip().lower()
 PERMISSION_MODE = os.environ.get("CLAUDE_PERMISSION_MODE", "auto")
 CLAUDE_COMMAND = os.environ.get("CLAUDE_COMMAND", "claude")
 
+_LIMIT_DEFAULTS = {
+    "max_sessions": 50,
+    "session_ttl_seconds": 7200,
+    "chat_body_max_bytes": 65536,
+    "message_max_chars": 32768,
+    "engine_body_max_bytes": 2_000_000,
+    "json_max_depth": 32,
+    "read_timeout_seconds": 10,
+    "max_concurrent_requests": 16,
+    "chat_rate_per_minute": 60,
+    "session_create_rate_per_minute": 10,
+}
+_LIMIT_ENV = {
+    "max_sessions": "WUXIA_WEB_MAX_SESSIONS",
+    "session_ttl_seconds": "WUXIA_WEB_SESSION_TTL_SECONDS",
+    "chat_body_max_bytes": "WUXIA_WEB_CHAT_BODY_MAX_BYTES",
+    "message_max_chars": "WUXIA_WEB_MESSAGE_MAX_CHARS",
+    "engine_body_max_bytes": "WUXIA_WEB_ENGINE_BODY_MAX_BYTES",
+    "json_max_depth": "WUXIA_WEB_JSON_MAX_DEPTH",
+    "read_timeout_seconds": "WUXIA_WEB_READ_TIMEOUT_SECONDS",
+    "max_concurrent_requests": "WUXIA_WEB_MAX_CONCURRENT_REQUESTS",
+    "chat_rate_per_minute": "WUXIA_WEB_CHAT_RATE_PER_MINUTE",
+    "session_create_rate_per_minute": "WUXIA_WEB_SESSION_CREATE_RATE_PER_MINUTE",
+}
+LIMITS = dict(_LIMIT_DEFAULTS)
+_agent_sessions = AgentSessionPool(
+    LIMITS["max_sessions"], LIMITS["session_ttl_seconds"])
+_chat_limiter = SlidingWindowLimiter()
+_session_create_limiter = SlidingWindowLimiter()
+
 # llm 后端 (直接走 LLM 请求, agent-lite)
 _LLM_BACKENDS = {"llm"}
 # claude 后端 (走 claude -p 管道 SSE)
@@ -87,6 +127,25 @@ def _resolve_engine_config():
     ENGINE_PORT = int(os.environ.get("WUXIA_RPG_ENGINE_PORT", "0"))
 
 
+def _resolve_limits():
+    """刷新 Web 会话与请求资源限制。"""
+    global LIMITS, _agent_sessions, _chat_limiter, _session_create_limiter
+    resolved = {}
+    for name, default in _LIMIT_DEFAULTS.items():
+        raw = os.environ.get(_LIMIT_ENV[name], str(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            print(f"[config] {_LIMIT_ENV[name]}={raw!r} 无效，使用默认值 {default}")
+            value = default
+        resolved[name] = max(1, value)
+    LIMITS = resolved
+    _agent_sessions = AgentSessionPool(
+        LIMITS["max_sessions"], LIMITS["session_ttl_seconds"])
+    _chat_limiter = SlidingWindowLimiter()
+    _session_create_limiter = SlidingWindowLimiter()
+
+
 def _resolve_paths():
     """在 _load_config 填充环境变量后, 刷新技能包路径。
 
@@ -112,6 +171,7 @@ AGENT_SYS = (
 # 会话是否已创建（用于区分 --session-id 创建 与 --resume 续接）
 _lock = threading.Lock()
 _known = set()
+_active_claude_sessions = set()
 _STATE = os.path.join(WEB_DIR, ".sessions.json")
 
 
@@ -131,7 +191,7 @@ def _load_config():
       backend_mode  -> LLM_BACKEND (顶层, llm | claude)
       llm 段        -> AGENT_API_BASE / AGENT_API_TOKEN / AGENT_MODEL (llm 后端)
       claude 段     -> CLAUDE_COMMAND / CLAUDE_PERMISSION_MODE (claude 后端)
-      server 段     -> HOST / PORT (本地监听地址) / WUXIA_FRONTEND (前端选择)
+      server 段     -> HOST / PORT / WUXIA_FRONTEND 及 WUXIA_WEB_* 资源限制
       paths 段      -> WUXIA_RPG_SAVE_DIR (存档根目录) / WUXIA_RPG_SKILL_DIR (技能包路径)
       engine 段     -> WUXIA_RPG_ENGINE_URL / WUXIA_RPG_ENGINE_TIMEOUT_MS
     """
@@ -167,6 +227,12 @@ def _load_config():
         val = server_cfg.get(cfg_key)
         if val and env_key not in os.environ:
             os.environ[env_key] = str(val)
+    limit_cfg = server_cfg.get("limits", {})
+    if isinstance(limit_cfg, dict):
+        for cfg_key, env_key in _LIMIT_ENV.items():
+            val = limit_cfg.get(cfg_key)
+            if val not in (None, "") and env_key not in os.environ:
+                os.environ[env_key] = str(val)
     # 刷新默认前端：config.json server.frontend 生效后更新模块级常量
     global DEFAULT_FRONTEND
     DEFAULT_FRONTEND = os.environ.get("WUXIA_FRONTEND", "new")
@@ -191,8 +257,7 @@ def _load_config():
 
 def _save_state():
     try:
-        with open(_STATE, "w", encoding="utf-8") as f:
-            json.dump(sorted(_known), f)
+        atomic_write_json(_STATE, sorted(_known))
     except OSError:
         pass
 
@@ -209,18 +274,37 @@ def _is_known(sid):
         return sid in _known
 
 
+def _forget_known(sid):
+    with _lock:
+        if sid not in _known:
+            return False
+        _known.remove(sid)
+        _save_state()
+        return True
+
+
+def _claim_claude_session(sid):
+    with _lock:
+        if sid in _active_claude_sessions:
+            return False
+        _active_claude_sessions.add(sid)
+        return True
+
+
+def _release_claude_session(sid):
+    with _lock:
+        _active_claude_sessions.discard(sid)
+
+
+def _claude_session_active(sid):
+    with _lock:
+        return sid in _active_claude_sessions
+
+
 def _jsonable(obj):
     """engine 返回偶含中文 ASCII 描图（标题页），用 ensure_ascii=False 直出即可；
     此钩子仅作显式标记，保持稳定以便将来接 SSE 加工。"""
     return obj
-
-
-def _read_body_limit(rfile, headers, limit=2_000_000):
-    """读请求体并限长。返回 bytes 或 None（超限时 None）。"""
-    length = int(headers.get("Content-Length", 0) or 0)
-    if length > limit:
-        return None
-    return rfile.read(length) if length > 0 else b""
 
 
 def _engine_json_from(text):
@@ -265,27 +349,61 @@ def _call_engine_service(payload, method="go"):
 
 
 # ---------- agent 后端: 进程内 agent-lite，按 session_id 维护会话 ----------
-_agents = {}        # sid -> Agent
-_agent_locks = {}   # sid -> threading.Lock (同一会话串行执行)
-_agents_lock = threading.Lock()
+def _create_agent():
+    if AGENT_DIR not in sys.path:
+        sys.path.insert(0, AGENT_DIR)  # agent-lite 以 core 为顶层包
+    from core import Agent
+    registry = build_wuxia_registry(_engine_client, _tools_manifest, SKILL_DIR)
+    return Agent(
+        tools=registry, skill_dirs=[SKILL_DIR], system_prompt=AGENT_SYS,
+        skill_usage_note=WEB_SKILL_USAGE_NOTE)
 
 
-def _get_agent(sid):
-    """按 session_id 取/建 Agent 实例及其执行锁。返回 (agent, lock, created)。"""
-    with _agents_lock:
-        if sid not in _agent_locks:
-            _agent_locks[sid] = threading.Lock()
-        lock = _agent_locks[sid]
-        if sid not in _agents:
-            if AGENT_DIR not in sys.path:
-                sys.path.insert(0, AGENT_DIR)  # agent-lite 以 core 为顶层包
-            from core import Agent
-            registry = build_wuxia_registry(_engine_client, _tools_manifest, SKILL_DIR)
-            _agents[sid] = Agent(
-                tools=registry, skill_dirs=[SKILL_DIR], system_prompt=AGENT_SYS,
-                skill_usage_note=WEB_SKILL_USAGE_NOTE)
-            return _agents[sid], lock, True
-        return _agents[sid], lock, False
+class ResourceLimitedHTTPServer(ThreadingHTTPServer):
+    """在创建处理线程前拒绝超出并发上限的连接。"""
+
+    daemon_threads = True
+
+    def __init__(self, server_address, handler_class, max_concurrent_requests):
+        self._request_slots = threading.BoundedSemaphore(max_concurrent_requests)
+        self._last_cleanup = time.monotonic()
+        super().__init__(server_address, handler_class)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            body = json.dumps({"error": "服务繁忙，请稍后重试"}, ensure_ascii=False).encode("utf-8")
+            response = (
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Content-Type: application/json; charset=utf-8\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            try:
+                request.sendall(response)
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+    def service_actions(self):
+        now = time.monotonic()
+        if now - self._last_cleanup < 60:
+            return
+        _agent_sessions.cleanup(now=now)
+        _chat_limiter.cleanup(now=now)
+        _session_create_limiter.cleanup(now=now)
+        self._last_cleanup = now
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -339,12 +457,14 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_chat()
         elif self.path == "/api/engine":
             self._handle_engine()
+        elif self.path == "/api/session/close":
+            self._handle_session_close()
         else:
             self._json({"error": "not found"}, 404)
 
     # ---------- 引擎直通（见 DESIGN.md；UI 控件调 go，judge 为 GM 内部用） ----------
     def _handle_engine(self):
-        payload = self._read_json_body()
+        payload = self._read_json_body(LIMITS["engine_body_max_bytes"])
         if payload is None:
             return
         slot = payload.get("槽位")
@@ -369,94 +489,160 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 聊天流式 ----------
     def _handle_chat(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length).decode("utf-8")
-            data = json.loads(body or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json({"error": "invalid json"}, 400)
+        data = self._read_json_body(LIMITS["chat_body_max_bytes"])
+        if data is None:
             return
 
-        message = (data.get("message") or "").strip()
-        sid = (data.get("session_id") or "").strip()
+        source = self.client_address[0]
+        if not _chat_limiter.allow(source, LIMITS["chat_rate_per_minute"]):
+            self._json({"error": "聊天请求过于频繁，请稍后重试"}, 429)
+            return
+
+        raw_message = data.get("message")
+        raw_sid = data.get("session_id")
+        if not isinstance(raw_message, str):
+            self._json({"error": "message required"}, 400)
+            return
+        if raw_sid is not None and not isinstance(raw_sid, str):
+            self._json({"error": "session_id 必须为字符串"}, 400)
+            return
+        message = raw_message.strip()
+        sid = (raw_sid or "").strip()
         if not message:
             self._json({"error": "message required"}, 400)
             return
+        if len(message) > LIMITS["message_max_chars"]:
+            self._json({"error": "message 过长"}, 413)
+            return
+        if len(sid) > 128:
+            self._json({"error": "session_id 过长"}, 400)
+            return
         if not sid:
             sid = str(uuid.uuid4())
-        create = not _is_known(sid)
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        # 流式响应无 Content-Length，必须靠连接关闭标记响应结束。
-        # 切勿用 keep-alive，否则浏览器 reader.read() 永不结束 → 前端卡死。
-        self.close_connection = True
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        def send(event, payload):
-            try:
-                self.wfile.write(f"event: {event}\n".encode("utf-8"))
-                self.wfile.write(b"data: " + json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                return False
-            return True
-
-        send("session", {"session_id": sid, "created": create})
+        agent = None
+        claude_claimed = False
         if _is_llm_backend():
-            self._run_agent(sid, message, send)
+            new_session = not _agent_sessions.exists(sid)
         else:
-            self._run_claude(sid, message, create, send)
+            new_session = not _is_known(sid)
+        if new_session and not _session_create_limiter.allow(
+                source, LIMITS["session_create_rate_per_minute"]):
+            self._json({"error": "新建会话过于频繁，请稍后重试"}, 429)
+            return
+        if _is_llm_backend():
+            try:
+                agent, create = _agent_sessions.checkout(sid, _create_agent)
+            except SessionBusyError as exc:
+                self._json({"error": str(exc)}, 409)
+                return
+            except SessionCapacityError as exc:
+                self._json({"error": str(exc)}, 503)
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._json({"error": f"agent 后端初始化失败: {exc}"}, 500)
+                return
+        else:
+            if not _claim_claude_session(sid):
+                self._json({"error": "会话正在处理上一条请求"}, 409)
+                return
+            claude_claimed = True
+            create = new_session
 
-    def _read_json_body(self):
         try:
-            raw = _read_body_limit(self.rfile, self.headers)
-            if raw is None:
-                self._json({"error": "请求体过大"}, 413)
-                return None
-            return json.loads(raw.decode("utf-8") or "{}")
-        except (ValueError, json.JSONDecodeError):
-            self._json({"error": "invalid json"}, 400)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            # 流式响应无 Content-Length，必须靠连接关闭标记响应结束。
+            # 切勿用 keep-alive，否则浏览器 reader.read() 永不结束 → 前端卡死。
+            self.close_connection = True
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+            def send(event, payload):
+                try:
+                    self.wfile.write(f"event: {event}\n".encode("utf-8"))
+                    self.wfile.write(b"data: " + json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return False
+                return True
+
+            send("session", {"session_id": sid, "created": create})
+            if _is_llm_backend():
+                self._run_agent(agent, sid, message, send)
+            else:
+                self._run_claude(sid, message, create, send)
+        finally:
+            if agent is not None:
+                _agent_sessions.release(sid)
+            if claude_claimed:
+                _release_claude_session(sid)
+
+    def _read_json_body(self, max_bytes):
+        try:
+            return read_json_object(
+                self.rfile, self.headers, self.connection,
+                max_bytes=max_bytes,
+                max_depth=LIMITS["json_max_depth"],
+                timeout_seconds=LIMITS["read_timeout_seconds"],
+            )
+        except RequestLimitError as exc:
+            self.close_connection = True
+            self._json({"error": exc.message}, exc.status)
             return None
 
-    def _run_agent(self, sid, message, send):
+    def _handle_session_close(self):
+        data = self._read_json_body(LIMITS["chat_body_max_bytes"])
+        if data is None:
+            return
+        sid = data.get("session_id")
+        if not isinstance(sid, str) or not sid.strip():
+            self._json({"error": "session_id required"}, 400)
+            return
+        sid = sid.strip()
+        if len(sid) > 128:
+            self._json({"error": "session_id 过长"}, 400)
+            return
+        if _claude_session_active(sid):
+            self._json({"error": "会话正在处理请求，暂时无法关闭"}, 409)
+            return
+        try:
+            agent_closed = _agent_sessions.close(sid)
+        except SessionBusyError as exc:
+            self._json({"error": str(exc)}, 409)
+            return
+        known_closed = _forget_known(sid)
+        self._json({"ok": True, "closed": agent_closed or known_closed})
+
+    def _run_agent(self, agent, sid, message, send):
         """agent-lite 后端: 复刻 Agent.run 主循环，途中推送工具徽标。
 
         每轮 step 后无 tool_calls 即为最终回复——agent 只回终稿，
         无需 claude 后端的过渡语拦截。
         """
         try:
-            agent, lock, _ = _get_agent(sid)
+            agent.session.add_user(message)
+            for _ in range(agent.max_iterations):
+                msg = agent.step()
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    send("tool", {"name": fn.get("name"), "arguments": fn.get("arguments") or ""})
+                if not msg.get("tool_calls"):
+                    send("delta", {"text": msg.get("content") or ""})
+                    st = _harvest_engine_state(agent)
+                    if st is not None:
+                        send("state", st)
+                    send("done", {"error": False, "session_id": sid})
+                    return
+            send("delta", {"text": "(已达到最大工具调用轮数，请换个方式描述或拆分任务。)"})
+            st = _harvest_engine_state(agent)
+            if st is not None:
+                send("state", st)
+            send("done", {"error": False, "session_id": sid})
         except Exception as e:  # noqa: BLE001
-            send("error", {"message": f"agent 后端初始化失败: {e}"})
+            send("error", {"message": f"agent 后端执行出错: {e}"})
             send("done", {"error": True})
-            return
-
-        with lock:  # 同一会话串行，避免历史交错
-            try:
-                agent.session.add_user(message)
-                for _ in range(agent.max_iterations):
-                    msg = agent.step()
-                    for tc in msg.get("tool_calls") or []:
-                        fn = tc.get("function") or {}
-                        send("tool", {"name": fn.get("name"), "arguments": fn.get("arguments") or ""})
-                    if not msg.get("tool_calls"):
-                        send("delta", {"text": msg.get("content") or ""})
-                        st = _harvest_engine_state(agent)
-                        if st is not None:
-                            send("state", st)
-                        send("done", {"error": False, "session_id": sid})
-                        return
-                send("delta", {"text": "(已达到最大工具调用轮数，请换个方式描述或拆分任务。)"})
-                st = _harvest_engine_state(agent)
-                if st is not None:
-                    send("state", st)
-                send("done", {"error": False, "session_id": sid})
-            except Exception as e:  # noqa: BLE001
-                send("error", {"message": f"agent 后端执行出错: {e}"})
-                send("done", {"error": True})
 
     def _run_claude(self, sid, message, create, send):
         cmd = [
@@ -693,6 +879,7 @@ def main():
     _load_config()
     _resolve_backend_config()
     _resolve_engine_config()
+    _resolve_limits()
     _resolve_paths()
     _load_state()
     _engine_client = EngineClient.connect(
@@ -705,11 +892,17 @@ def main():
     port = int(os.environ.get("PORT", "8000"))
     srv = None
     try:
-        srv = ThreadingHTTPServer((host, port), Handler)
+        srv = ResourceLimitedHTTPServer(
+            (host, port), Handler, LIMITS["max_concurrent_requests"])
         print(f"武侠RPG Web 已启动: http://{host}:{port}")
         print(f"项目根目录: {ROOT}")
         print(f"Engine Service: {_engine_client.service_url}")
         print(f"LLM 后端: {BACKEND}  (config.json backend_mode 或 LLM_BACKEND 环境变量: llm|claude)")
+        print("资源限制: "
+              f"会话={LIMITS['max_sessions']} TTL={LIMITS['session_ttl_seconds']}s "
+              f"并发={LIMITS['max_concurrent_requests']} "
+              f"chat={LIMITS['chat_body_max_bytes']}B/{LIMITS['message_max_chars']}字符 "
+              f"engine={LIMITS['engine_body_max_bytes']}B depth={LIMITS['json_max_depth']}")
         if _is_llm_backend():
             print(f"agent 模型服务: AGENT_API_BASE={os.environ.get('AGENT_API_BASE', '(未设置)')} "
                   f"AGENT_MODEL={os.environ.get('AGENT_MODEL', '(未设置)')}")

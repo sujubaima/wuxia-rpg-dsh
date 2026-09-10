@@ -55,6 +55,7 @@ interface GameState {
   gateMode: boolean
   gateSaves: GateSave[]
   gateSaveCnt: number
+  gateVersion: string
   gateLoading: boolean
   // explore
   lastExpl: EngineResult | null
@@ -257,6 +258,7 @@ export const useGameStore = create<GameState>((set, get) => {
     gateMode: false,
     gateSaves: [],
     gateSaveCnt: 0,
+    gateVersion: '0.0.0',
     gateLoading: false,
     lastExpl: null,
     party: null,
@@ -323,7 +325,8 @@ export const useGameStore = create<GameState>((set, get) => {
       set({ gateLoading: true })
       const d = await fetchUi({ 类型: '开始游戏' })
       const saves = (d.存档列表 as any) || []
-      set({ gateSaves: saves, gateSaveCnt: saves.length, gateLoading: false })
+      const version = typeof d.版本 === 'string' ? d.版本 : '0.0.0'
+      set({ gateSaves: saves, gateSaveCnt: saves.length, gateVersion: version, gateLoading: false })
     },
 
     applyExplorationState(d) {
@@ -556,7 +559,10 @@ export const useGameStore = create<GameState>((set, get) => {
       if (get().busy) { get().addSysLine('正在结算上一回合…'); return }
       set({ busy: true, replayLock: true })
       try {
-        const d = await engineGo([action])
+        let d = await engineGo([action])
+        if (d.状态冲突 === 'go_already_committed' && d.go_result && typeof d.go_result === 'object') {
+          d = d.go_result as EngineResult
+        }
         if (d.错误) { get().addSysLine('战斗操控未成功：' + d.错误, { long: true }); return }
         if (d.界面 === 'battle-end-ui') {
           get().enterBattle(d)

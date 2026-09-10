@@ -94,7 +94,7 @@ async function loadPresets(){
 /* 测试档：角色名 = 预设名·试（避开基线重名），有则复用 */
 async function ensureTestSlot(presetName){
   const cloneName=presetName+'·试';
-  const all=await engineGo([{"类型":"开始游戏"}]);
+  const all=await engineGo([{"类型":"开始游戏"}],0);
   const found=(all.存档列表||[]).find(s=>(s.角色名||'')===cloneName);
   if(found){TEST_SLOT=found.slot;return cloneName;}
   const pr=await fetch('/api/preset/'+encodeURIComponent(presetName));
@@ -103,7 +103,7 @@ async function ensureTestSlot(presetName){
   const clone={...d};
   delete clone.id;delete clone.死亡;delete clone.关系度;delete clone.经验值;
   clone.名称=cloneName;
-  const c=await engineGo([{"类型":"创建角色","角色":clone}]);
+  const c=await engineGo([{"类型":"创建角色","角色":clone}],all.next_slot);
   if(c.错误)throw new Error('建档失败：'+c.错误);
   TEST_SLOT=(c.结算||[]).find(x=>x.新建slot)?.新建slot||0;
   if(!TEST_SLOT)throw new Error('建档回执未带新建slot');

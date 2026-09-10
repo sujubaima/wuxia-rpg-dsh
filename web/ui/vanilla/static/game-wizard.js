@@ -194,12 +194,15 @@ async function submitCreate(){
   const err=document.getElementById('createErr');
   const sk=START_SKILLS.find(s=>s.type===wiz.skill);
   /* 跨档重名拦截：引擎只查基线+当前slot写入域，不查其他 slot——前端先核全档 */
-  err.textContent='校验姓名…';
+  err.textContent='校验姓名与槽位…';
+  let nextSlot=0;
   try{
     const all=await fetchUi({"类型":"开始游戏"});
     const clash=(all.存档列表||[]).find(s=>(s.角色名||'')===wiz.name);
     if(clash){err.textContent=`「${wiz.name}」已有人在闯江湖（slot ${clash.slot}），请另起一名。`;return;}
-  }catch(e){/* 校验失败不阻塞，继续交给引擎兜底 */}
+    nextSlot=Number(all.next_slot);
+    if(!Number.isInteger(nextSlot)||nextSlot<=0){err.textContent='未取得可用存档槽位，请稍后重试。';return;}
+  }catch(e){err.textContent='读取存档槽位失败，请稍后重试。';return;}
   /* 向导只收集机械参数：不代填人设（GM 创作）、不调引擎（建号与开场都是 GM 的事）。
      把"不含人设"的档案原样交给 LLM，由它补人设→创建角色→初入江湖→渲染首屏。 */
   const char={
@@ -219,10 +222,11 @@ async function submitCreate(){
     `用户正在 wuxia-rpg 游戏中，请加载 skill wuxia-rpg。\n`+
     `【建号委托】玩家已进入 wuxia-rpg 游戏会话（此消息起，玩家输入原则上都是游戏指令，按游戏规则执行）。\n`+
     `玩家经创建向导选定角色参数（档案尚未落盘，人设留空）。\n`+
+    `初始可用槽位：${nextSlot}\n`+
     `角色档案：${JSON.stringify(char)}\n`+
     `请按序完成：1) 为该角色撰写「人设」（性格/背景，不得点明具体目的与伏笔、不得有明确门派归属）并入档案；`+
-    `2) 携完整档案调用「创建角色」（go 隐藏界面——新档/物资/首档一并落盘）；`+
-    `3) 据建号返回的落点与时辰撰写开场白与初始剧情，以下一条 engine.py judge（顶层 \`当前剧情\`/\`场景要素\`/\`经历概括\`）`+
+    `2) 携完整档案调用「创建角色」，wuxia_go 顶层槽位首次必须传 ${nextSlot}；若仅返回错误码 slot_occupied，读取响应 next_slot 并以同一完整档案继续重试，其他错误立即停止；`+
+    `3) 建号成功后据落点与时辰撰写开场白与初始剧情，以下一条 engine.py judge（顶层 \`当前剧情\`/\`场景要素\`/\`经历概括\`）`+
     `完成首屏渲染（exploration-ui）。`+
   closeCreate();
   enterGame();   /* 先入主界面，再让 GM 开工——用户能看着它一步步调工具 */

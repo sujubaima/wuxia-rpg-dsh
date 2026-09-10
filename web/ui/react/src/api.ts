@@ -41,6 +41,20 @@ function currentSlotRef(): number {
   return _slot
 }
 
+/** 主动释放服务端临时对话上下文；失败不阻塞浏览器侧新建会话。 */
+export async function closeSession(sessionId: string): Promise<void> {
+  if (!sessionId) return
+  try {
+    await fetch('/api/session/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    })
+  } catch {
+    /* best effort */
+  }
+}
+
 export interface StreamHandlers {
   onSession?: (sid: string) => void
   onDelta?: (text: string) => void
