@@ -7,8 +7,8 @@ function loadCommand(slot: number, target: string, label: string): string {
   return `/wuxia-load ${JSON.stringify({ slot, target, label })}`
 }
 
-function createCommand(character: CharacterDraft): string {
-  return `/wuxia-create ${JSON.stringify({ character })}`
+function createCommand(slot: number, character: CharacterDraft): string {
+  return `/wuxia-create ${JSON.stringify({ slot, character })}`
 }
 
 function SaveSlotCard({ save, command, onDelete }: {
@@ -111,8 +111,10 @@ const LOGO = `██╗    ██╗██╗   ██╗██╗  ██╗
 
         ── 武 侠 R P G ──`
 
-export function TitleCard({ saves, command, deleteRequest, locked }: {
+export function TitleCard({ saves, nextSlot, version, command, deleteRequest, locked }: {
   saves?: any[]
+  nextSlot?: number
+  version?: string
   command?: (line: string) => void
   deleteRequest?: DeleteRequest
   /** 所属回合已被新回合取代：过时快照，控件永久禁用、仅供回顾 */
@@ -122,10 +124,13 @@ export function TitleCard({ saves, command, deleteRequest, locked }: {
   const [gameStarting, setGameStarting] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
-  // 删除后用 engine 返回的最新存档列表覆盖显示（props.saves 不会自动刷新）
+  // 删除后用 engine 返回的最新标题数据覆盖显示（props 不会自动刷新）
   const [overrideSaves, setOverrideSaves] = useState<any[] | null>(null)
+  const [overrideNextSlot, setOverrideNextSlot] = useState<number | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
   const slots = overrideSaves ?? saves ?? []
+  const availableSlot = overrideNextSlot ?? nextSlot
+  const canCreate = Boolean(command) && Number.isInteger(availableSlot) && Number(availableSlot) > 0
   const existingNames = slots.map((save: any) => String(save?.角色名 || '')).filter(Boolean)
   const closeWizard = useCallback(() => setWizardOpen(false), [])
   const titleCommand = useCallback((line: string) => {
@@ -134,16 +139,21 @@ export function TitleCard({ saves, command, deleteRequest, locked }: {
     command(line)
   }, [command])
   const submit = useCallback((character: CharacterDraft) => {
-    titleCommand(createCommand(character))
+    if (!Number.isInteger(availableSlot) || Number(availableSlot) <= 0) return
+    titleCommand(createCommand(Number(availableSlot), character))
     setWizardOpen(false)
-  }, [titleCommand])
+  }, [availableSlot, titleCommand])
   const handleDelete = useCallback((slot: number) => {
     if (!deleteRequest || deleting) return
     if (!confirm(`删除 slot ${slot} 整个角色档？不可恢复！`)) return
     setDeleting(true)
     setDeleteError('')
     void deleteRequest(slot).then(
-      (res) => { setOverrideSaves(res.存档列表); setDeleting(false) },
+      (res) => {
+        setOverrideSaves(res.存档列表)
+        setOverrideNextSlot(res.next_slot)
+        setDeleting(false)
+      },
       (err) => { setDeleteError(err instanceof Error ? err.message : String(err)); setDeleting(false) },
     )
   }, [deleteRequest, deleting])
@@ -198,7 +208,7 @@ export function TitleCard({ saves, command, deleteRequest, locked }: {
       }),
       jsxs('div', {
         style: { color: '#9a8c6e', fontSize: 12, marginTop: 6 },
-        children: ['作者：可乐酸橙　版本：v0.9.8　', `存档：${slots.length} 个`],
+        children: [`作者：可乐酸橙　版本：v${version || '0.0.0'}　`, `存档：${slots.length} 个`],
       }),
       jsx('div', {
         style: { color: '#7a9a5a', fontSize: 12.5, marginTop: 12, letterSpacing: 1 },
@@ -214,10 +224,10 @@ export function TitleCard({ saves, command, deleteRequest, locked }: {
           jsx('div', {
             style: { textAlign: 'center', margin: '14px 0 6px' },
             children: jsx('button', {
-              style: { fontSize: 14, padding: '8px 26px', letterSpacing: 4, background: 'transparent', color: '#c8a456', border: '1px solid #8a6a2a', borderRadius: 6, cursor: command ? 'pointer' : 'default', opacity: command ? 1 : 0.45 },
-              disabled: !command,
-              title: command ? '打开人物创建向导' : '当前会话暂不可执行命令',
-              onClick: command ? () => setWizardOpen(true) : undefined,
+              style: { fontSize: 14, padding: '8px 26px', letterSpacing: 4, background: 'transparent', color: '#c8a456', border: '1px solid #8a6a2a', borderRadius: 6, cursor: canCreate ? 'pointer' : 'default', opacity: canCreate ? 1 : 0.45 },
+              disabled: !canCreate,
+              title: canCreate ? `使用 slot ${availableSlot} 创建角色` : '未取得可用存档槽位',
+              onClick: canCreate ? () => setWizardOpen(true) : undefined,
               children: '＋ 创建角色',
             }),
           }),

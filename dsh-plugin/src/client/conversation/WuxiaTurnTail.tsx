@@ -47,7 +47,14 @@ export function WuxiaTurnTail({ matched, command, setDraft, panelRequest, battle
   const view = result?.界面 ?? '?'
   const saves = result?.存档列表 as any[] | undefined
 
-  if (view === 'title-ui') return jsx(TitleCard, { saves, command, deleteRequest, locked: stale })
+  if (view === 'title-ui') return jsx(TitleCard, {
+    saves,
+    nextSlot: result?.next_slot as number | undefined,
+    version: result?.版本 as string | undefined,
+    command,
+    deleteRequest,
+    locked: stale,
+  })
   if (view === 'exploration-ui') {
     return jsx(ExplorationCard, { data: result, setDraft, panelRequest, locked: stale })
   }

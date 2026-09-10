@@ -103,7 +103,7 @@ function narrationDirective(
     `不得再次调用 wuxia_go，不得重复扣除金钱、体力或推进时间。\n` +
     `请从 go 之后的推演阶段继续：${continuation}，然后以槽位 ${slot} 调用 wuxia_judge ` +
     `落盘当前剧情、场景要素和经历概括。\n` +
-    `wuxia_judge 应返回 exploration-ui；渲染模式为 dsh 时按 skill 要求保持正文静默。`
+    `wuxia_judge 应返回 exploration-ui；严格原样输出返回的渲染文本，包括空字符串。`
   )
 }
 

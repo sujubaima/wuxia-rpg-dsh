@@ -27,6 +27,13 @@ test('shared Tools Schema declares eight unique operations', async () => {
 
 test('standard JSON Schema converts to DSH parameter specs', async () => {
   const manifest = await loadManifest()
+  const go = manifest.tools.find(tool => tool.name === 'wuxia_go')
+  assert.ok(go)
+  assert.match(go.input_schema.properties.槽位.description, /next_slot/)
+  const goOutput = toValueSchema(go.output_schema)
+  assert.equal(goOutput.properties.next_slot.type, 'integer')
+  assert.equal(goOutput.properties.错误码.type, 'string')
+
   const recommend = manifest.tools.find(tool => tool.name === 'wuxia_recommend')
   assert.ok(recommend)
   const parameters = toParameterSchema(recommend.input_schema)

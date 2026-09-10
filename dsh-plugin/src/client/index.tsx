@@ -103,7 +103,7 @@ export function apply(ctx: any): void {
 
   // dsh 渲染模式下界面由 Card 托管：强制 shadow 内置 assistant-step 渲染器
   // （priority 更低者渲染），把 assistant 文本气泡改成「Think」折叠样式，
-  // 默认收起、灰色，不喧宾夺主；代码级，不依赖模型遵守「输出空白」规则。
+  // 默认收起、灰色，不喧宾夺主。
   ctx.slots.inject('conversation.chat.node', () => ctx.slots.register(
     { name: 'conversation.chat.node', key: 'assistant-step', priority: -1 },
     AssistantThinkNode,

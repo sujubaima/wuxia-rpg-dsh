@@ -13,14 +13,18 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
     description: '按创建向导档案新建武侠RPG角色并生成开场（不在对话流显示为用户气泡）',
     recordInput: false,
     handler: (inv: any) => {
-      let args: { character?: Record<string, unknown> } = {}
+      let args: { slot?: number; character?: Record<string, unknown> } = {}
       try {
         args = JSON.parse((inv.rawInput || '').trim() || '{}')
       } catch {
         return { kind: 'error' as const, text: '创建角色参数不是有效 JSON' }
       }
+      const slot = Number(args.slot)
       const character = args.character
       const name = typeof character?.名称 === 'string' ? character.名称.trim() : ''
+      if (!Number.isInteger(slot) || slot <= 0) {
+        return { kind: 'error' as const, text: '创建角色参数缺少有效 slot' }
+      }
       if (!character || typeof character !== 'object' || !name) {
         return { kind: 'error' as const, text: '创建角色参数缺少完整角色档案' }
       }
@@ -31,9 +35,9 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
         `${JSON.stringify(profile)}\n` +
         `请在本回合连续完成建号，不要要求玩家重复提供信息：\n` +
         `1) 为档案补写“人设”（性格与背景；不得点明具体目的、伏笔或明确门派归属）。\n` +
-        `2) 调用 wuxia_go，槽位必须传 0，行为为 [{"类型":"创建角色","角色":完整档案}]。\n` +
-        `3) 从 go 返回的“结算”中读取“新建slot”“落点”“当前时间”；若建号失败则停止并说明错误。\n` +
-        `4) 以新建slot调用 wuxia_judge，行为传 []，据落点与时辰撰写开场“当前剧情”，并给出 3～5 个“场景要素”及精简“经历概括”。\n` +
+        `2) 调用 wuxia_go，顶层槽位首次必须传 ${slot}，行为为 [{"类型":"创建角色","角色":完整档案}]。\n` +
+        `3) 若仅返回错误码 slot_occupied，读取响应 next_slot 并以同一完整档案继续重试；其他错误立即停止并说明。\n` +
+        `4) 成功后从 go 返回的“结算”中读取“新建slot”“落点”“当前时间”，以新建slot调用 wuxia_judge，行为传 []，据落点与时辰撰写开场“当前剧情”，并给出 3～5 个“场景要素”及精简“经历概括”。\n` +
         `judge 应返回 exploration-ui，作为新角色首屏并接续后续游戏。`
       inv.agent.followup(createUserMessage({
         content: [{ type: 'text' as const, text: directive }],
@@ -99,9 +103,13 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
         行为: [{ 类型: '开始游戏' }],
       }, 'go')
       const saves = Array.isArray(list.存档列表) ? list.存档列表 : []
+      const nextSlot = Number(list.next_slot)
+      if (!Number.isInteger(nextSlot) || nextSlot <= 0) {
+        return { kind: 'error' as const, text: '删除后未取得最新可用 slot' }
+      }
       return {
         kind: 'success' as const,
-        text: JSON.stringify({ slot, 存档列表: saves }),
+        text: JSON.stringify({ slot, next_slot: nextSlot, 存档列表: saves }),
       }
     },
   })

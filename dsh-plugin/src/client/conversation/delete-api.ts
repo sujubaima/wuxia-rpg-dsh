@@ -3,6 +3,7 @@
 
 export interface DeleteSaveResponse {
   slot: number
+  next_slot: number
   存档列表: any[]
 }
 
@@ -33,10 +34,12 @@ export async function requestDelete(
   } catch {
     throw new Error('删除命令返回了无效 JSON')
   }
-  if (!parsed || typeof parsed.slot !== 'number' || !Array.isArray(parsed.存档列表)) {
+  if (!parsed || typeof parsed.slot !== 'number'
+      || !Number.isInteger(parsed.next_slot) || parsed.next_slot <= 0
+      || !Array.isArray(parsed.存档列表)) {
     throw new Error('删除命令返回格式不完整')
   }
-  return { slot: parsed.slot, 存档列表: parsed.存档列表 }
+  return { slot: parsed.slot, next_slot: parsed.next_slot, 存档列表: parsed.存档列表 }
 }
 
 export type DeleteRequest = (slot: number) => Promise<DeleteSaveResponse>

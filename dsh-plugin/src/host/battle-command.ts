@@ -174,7 +174,7 @@ function conclusionDirective(
     `${JSON.stringify(data)}\n` +
     `不得重跑战斗-开始、战斗-推进或任何战斗操控 action。\n` +
     `${route}\n` +
-    `当前剧情必须完整承接终局并返回 exploration-ui；渲染模式为 dsh 时按 skill 要求保持正文静默。\n` +
+    `当前剧情必须完整承接终局并返回 exploration-ui；严格原样输出返回的渲染文本，包括空字符串。\n` +
     `JSON 纪律：所有工具调用的 arguments 必须是合法 JSON。字符串值内不得出现未转义的半角双引号（引用对话或字词一律用「」），不得含裸换行；如需换行用\\n。`
   )
 }
@@ -230,10 +230,13 @@ export function registerWuxiaBattleCommand(ctx: Context, serviceUrl: string, tim
       if (operation === 'act') {
         const checked = validateBattleAction(args.action)
         if (!checked.action) return commandError(checked.error || '战斗 action 无效')
-        const settled = await callEngine(serviceUrl, timeoutMs, {
+        let settled = await callEngine(serviceUrl, timeoutMs, {
           槽位: slot,
           行为: [checked.action],
         }, 'go')
+        if (settled.状态冲突 === 'go_already_committed' && isRecord(settled.go_result)) {
+          settled = settled.go_result as EngineData
+        }
         if (engineError(settled)) return success({ result: settled, committed: false })
         if (settled.界面 === 'battle-end-ui') {
           return success({ result: settled, committed: true, pendingAdvance: false })
