@@ -29,6 +29,42 @@ def _tool_call_group_size(messages, start):
     return size
 
 
+def _normalize_tool_messages(messages):
+    """移除不完整或错配的 tool_calls 组，保证导出历史满足消息协议。"""
+    kept = []
+    dropped = []
+    i = 0
+    while i < len(messages):
+        message = messages[i]
+        if message.get("role") == "tool":
+            dropped.append(message)
+            i += 1
+            continue
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            kept.append(message)
+            i += 1
+            continue
+
+        j = i + 1
+        results = []
+        while j < len(messages) and messages[j].get("role") == "tool":
+            results.append(messages[j])
+            j += 1
+        call_ids = [call.get("id") for call in message["tool_calls"]]
+        result_ids = [result.get("tool_call_id") for result in results]
+        complete = (
+            call_ids
+            and all(call_ids)
+            and len(call_ids) == len(set(call_ids))
+            and len(result_ids) == len(call_ids)
+            and set(result_ids) == set(call_ids)
+        )
+        group = [message, *results]
+        (kept if complete else dropped).extend(group)
+        i = j
+    return kept, dropped
+
+
 class Session:
     def __init__(self, system_prompt="", max_context_tokens=1_000_000,
                  summarizer=None, compress_target_ratio=0.5):
@@ -83,6 +119,14 @@ class Session:
 
     # ---------- 压缩与裁剪 ----------
 
+    def _normalize_history(self):
+        kept, dropped = _normalize_tool_messages(self.messages)
+        if not dropped:
+            return
+        self.messages = kept
+        if self.on_drop:
+            self.on_drop(dropped)
+
     def _drop_groups(self, target_tokens):
         """从头部按 tool_calls 组为单位选出待压缩/待丢弃前缀, 返回 (组列表, 剩余消息)。"""
         groups = []
@@ -117,6 +161,7 @@ class Session:
         return True
 
     def _maybe_compress(self):
+        self._normalize_history()
         if self._total_tokens() <= self.max_context_tokens:
             return
         target = int(self.max_context_tokens * self.compress_target_ratio)
@@ -125,6 +170,7 @@ class Session:
     def force_compress(self, ratio=0.5):
         """API 报上下文超限时主动压缩: 无视预算, 把历史压到当前的 ratio 比例。
         返回是否确实有内容被压缩 (无可压内容时重试也是白压, 应放弃)。"""
+        self._normalize_history()
         target = max(1, int(self._total_tokens() * ratio))
         return self._compress_to(target)
 
@@ -137,6 +183,7 @@ class Session:
 
     def get_messages(self):
         """导出完整 messages (含 system 与历史摘要)。超限先压缩, 兜底再裁剪。"""
+        self._normalize_history()
         self._maybe_compress()
         # 兜底裁剪: 无 summarizer 或压缩结果仍超限时, 保证输出有界
         budget = self.max_context_tokens - _estimate_tokens(self._system_prompt_out())

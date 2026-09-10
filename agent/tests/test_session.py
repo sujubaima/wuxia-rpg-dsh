@@ -10,7 +10,7 @@ AGENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if AGENT not in sys.path:
     sys.path.insert(0, AGENT)
 
-from core.session import Session, _tool_call_group_size
+from core.session import Session, _normalize_tool_messages, _tool_call_group_size
 
 
 def assistant_calls(*call_ids):
@@ -62,6 +62,48 @@ class SessionToolGroupingTest(unittest.TestCase):
             1,
         )
 
+    def test_normalize_keeps_complete_results_in_any_order(self):
+        messages = [
+            assistant_calls("call_a", "call_b"),
+            tool_result("call_b"),
+            tool_result("call_a"),
+            message("user"),
+        ]
+
+        kept, dropped = _normalize_tool_messages(messages)
+
+        self.assertEqual(kept, messages)
+        self.assertEqual(dropped, [])
+
+    def test_normalize_drops_incomplete_mismatched_and_orphaned_results(self):
+        user = message("user")
+        messages = [
+            tool_result("orphan"),
+            assistant_calls("missing"),
+            user,
+            assistant_calls("call_a"),
+            tool_result("call_other"),
+            message("assistant"),
+        ]
+
+        kept, dropped = _normalize_tool_messages(messages)
+
+        self.assertEqual(kept, [user, messages[-1]])
+        self.assertEqual(dropped, messages[:2] + messages[3:5])
+
+    def test_normalize_drops_duplicate_call_ids(self):
+        messages = [
+            assistant_calls("duplicate", "duplicate"),
+            tool_result("duplicate"),
+            tool_result("duplicate"),
+            message("user"),
+        ]
+
+        kept, dropped = _normalize_tool_messages(messages)
+
+        self.assertEqual(kept, [messages[-1]])
+        self.assertEqual(dropped, messages[:-1])
+
     def test_compression_does_not_swallow_later_turns(self):
         session = Session(max_context_tokens=12, compress_target_ratio=0.9)
         session.messages = [
@@ -84,6 +126,24 @@ class SessionToolGroupingTest(unittest.TestCase):
         self.assertEqual(dropped[1]["tool_call_id"], "call_a")
         self.assertEqual(output[0]["role"], "assistant")
         self.assertNotIn("tool_calls", output[0])
+
+    def test_export_removes_invalid_tool_fragments_before_compression(self):
+        session = Session(max_context_tokens=10, compress_target_ratio=0.9)
+        session.messages = [
+            assistant_calls("call_a"),
+            tool_result("call_other"),
+            {"role": "user", "content": "end"},
+        ]
+        dropped = []
+        session.on_drop = dropped.extend
+
+        output = session.get_messages()
+
+        self.assertEqual(output, [{"role": "user", "content": "end"}])
+        self.assertEqual(dropped, [
+            assistant_calls("call_a"),
+            tool_result("call_other"),
+        ])
 
     def test_fallback_trim_never_leaves_orphaned_tool_results(self):
         session = Session(max_context_tokens=11)
