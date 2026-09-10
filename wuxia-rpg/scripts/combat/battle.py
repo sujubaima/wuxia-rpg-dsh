@@ -45,6 +45,7 @@ sys.path.insert(0, HERE)
 from combat import battle_engine as be
 from common import dao as dq
 from common.json_io import JsonMissingError, atomic_write_json, read_json
+from common.render_mode import render_mode
 from store import battle_runtime as br
 from store.save_manager import slot_data_dir
 
@@ -824,7 +825,7 @@ def render_results_struct(results, skills_db, start_idx=1, players=None):
 
 
 def render_results(results, skills_db, start_idx=1, with_header=False, teams=None):
-    """渲染一段结算列表为三层战报文本（纯 AI 整场 / 玩家操控 AI 批次通用）。"""
+    """渲染规范三层战报（纯 AI 整场 / 玩家操控 AI 批次共用的玩家可见原文）。"""
     lines = []
     if with_header and teams:
         lines.append("、".join("/".join(v) for v in teams.values()) + " 对阵，剑出鞘。")
@@ -1467,9 +1468,8 @@ def emit_battle_json(state, report, player_ui=None, winner=None,
                      回合详情=None, 行动预告=None, 行动信息=None):
     """统一输出战斗 JSON：{战局状态, 战报, 玩家界面/行动信息}。
     - 战局状态：状态(我方视角)/回合数/我方/敌方/战果(战斗结束时：{角色名:存活|逃走|败阵})
-    - 战报：本轮三层战报+结算行渲染文本（无内容则空串）——LLM 模式
-    - 玩家界面：玩家回合界面文本（仅进行中、轮到玩家时；否则 None）——LLM 模式
-    - 行动信息：玩家回合结构化数据（同上条件）——WEB_UI 模式，前端解析渲染
+    - 战报/玩家界面：LLM 与 WEB_UI 均带，供 engine 生成规范 Markdown
+    - 回合详情/行动信息：WEB_UI 与 dsh 带，供前端结构化渲染
     战斗结束（winner 非空或 end_mode 非空）时附 `战果`：双方人员名称→最终状态。
     """
     chars = state.get("角色列表", [])
@@ -1489,16 +1489,15 @@ def emit_battle_json(state, report, player_ui=None, winner=None,
         "我方": _roster_with_status(state, my_team, ended=ended),
         "敌方": _roster_with_status(state, enemy_team, ended=ended),
     }
-    # 渲染模式：WUXIA_RPG_RENDER_MODULE=LLM（缺省）→ 文本战报+玩家界面；
-    # 否则（WEB_UI）→ 结构化回合详情+行动信息。
-    # 战局状态/战果为战况状态、行动预告为行动顺序，两种模式均带。
-    llm_mode = os.environ.get("WUXIA_RPG_RENDER_MODULE", "LLM") == "LLM"
+    # LLM 只需文本；WEB_UI 同时保留文本与结构；dsh 只需结构化字段。
+    # 战局状态/战果为战况状态、行动预告为行动顺序，所有模式均带。
+    mode = render_mode().lower()
     payload = {"战局状态": battle_state}
-    if llm_mode:
+    if mode != "dsh":
         payload["战报"] = report or ""
         if player_ui is not None:
             payload["玩家界面"] = player_ui
-    else:
+    if mode != "llm":
         if 回合详情 is not None:
             payload["回合详情"] = 回合详情
         if 行动信息 is not None:

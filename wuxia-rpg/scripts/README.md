@@ -13,8 +13,8 @@
 
 - 理解玩家的自然语言；
 - 决定剧情如何发展；
-- 替 GM 撰写叙事；
-- 直接渲染 Markdown 或浏览器界面。
+- 替 GM 撰写剧情叙事；
+- 直接渲染浏览器控件。
 
 ## 1. 运行要求
 
@@ -174,6 +174,8 @@ JSON
 | 字段 | 含义 |
 |---|---|
 | `界面` | 前端或 GM 应进入的界面类型 |
+| `渲染模式` | 归一渲染模式：dsh / WEB_UI / LLM（未设置按 LLM） |
+| `渲染文本` | 完整界面 Markdown；GM 严格原样输出，包括空字符串 |
 | `结算` | 本次成功或失败的结算条目 |
 | `剧情描写` | 已写入的当前剧情 |
 | `场景要素` | 当前可见对象及可用特殊指令 |
@@ -183,7 +185,7 @@ JSON
 | `剩余` | 距下一次自动存档的交互轮数 |
 | `错误` | 参数、规则或状态校验错误 |
 
-`界面`是路由标识，不是已渲染文本。Markdown GM 按 `references/ui/` 中的规范渲染；Web 和 DSH 前端直接消费结构化字段。
+`界面`是路由标识。全部界面的 Markdown 均由 engine 拼入顶层 `渲染文本`（模板位于 `settle/markdown_ui.py`）：GM 成功返回时严格原样输出，不改写或润色，包括空字符串。`title-ui` 的创建草稿随 action 无状态往返；`battle-ui` / `battle-end-ui` 的规范战报来自 `battle.py`。dsh 模式仍以空文本配合结构化卡片。judge 自检失败返回的 `exploration-ui`+`错误` 不生成 `渲染文本`，须修正后重调。
 
 ## 5. 目录结构
 
@@ -207,6 +209,7 @@ scripts/
 | `engine_fields.py` | `judge` 状态变化的校验与应用 |
 | `engine_io.py` | 槽位切换、角色读写、当前状态组装、战斗临时文件管理 |
 | `engine_ui.py` | 结构化界面响应与公共字段 |
+| `title_flow.py` | 标题创建草稿、校验、随机分配与初始角色组装 |
 | `engine_state.py` | 角色和场景的事务暂存区 |
 
 ### `common/`
@@ -490,5 +493,5 @@ JSON
 - [`../references/wuxia-rpg-actions.md`](../references/wuxia-rpg-actions.md)：行为和状态变化参数契约；
 - [`../references/wuxia-rpg-data-schema.md`](../references/wuxia-rpg-data-schema.md)：数据结构；
 - [`../references/wuxia-rpg-battle-system.md`](../references/wuxia-rpg-battle-system.md)：战斗系统；
-- [`../references/ui/`](../references/ui/)：Markdown 界面渲染规范；
+- [`../references/ui/`](../references/ui/)：界面交互规则（正文模板见 `settle/markdown_ui.py`）；
 - [`../../docs/技术手册.md`](../../docs/技术手册.md)：完整项目架构与设计取舍。

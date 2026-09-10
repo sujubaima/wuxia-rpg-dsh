@@ -3,6 +3,7 @@
 """engine ui 层(由 engine.py 拆分)。"""
 import os, sys
 from common import dao as dq
+from common.render_mode import is_dsh_mode, render_mode
 from world import mastery as ms
 from store import save_manager as sm
 from world import trade as td
@@ -13,6 +14,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
 from settle.engine_io import _build_state, _load_map, _read_char, _resolve_region, _set_slot, _station_type, _write_char
+from settle.markdown_ui import attach_render_text
 
 # 驿站路线单价（铜钱/天），按驿站类型：海驿最贵（海船）、边驿次之（偏远险路）、陆驿车马、山驿山路、水驿船票最廉
 _STATION_PRICE = {"水驿": 100, "陆驿": 150, "山驿": 120, "海驿": 200, "边驿": 180}
@@ -164,17 +166,23 @@ def _build_mastery(slot, role, skill_name):
                 "经验值": char.get("经验值", 0), "等级": 0}
     level = ms.get_learned_level(char, skill_name) or 0
     exp = char.get("经验值", 0) or 0
-    if os.environ.get("WUXIA_RPG_RENDER_MODULE", "LLM") == "LLM":
-        lines, _ = ms.build_table(char, skill_name, exp, level)
+    # dsh：只出结构化十境表数据（卡片消费，渲染文本为空）；
+    # LLM：只出十境表文本（供 Markdown 直拼）；其余（WEB_UI 等）：两者并存。
+    if is_dsh_mode():
+        table, _ = ms.build_table_struct(char, skill_name, exp, level)
         return {
             "界面": "mastery-ui", "角色": role, "武学": skill_name,
-            "十境表": "\n".join(lines) if lines else "", "经验值": exp, "等级": level,
+            "经验值": exp, "等级": level, "十境表数据": table,
         }
-    table, _ = ms.build_table_struct(char, skill_name, exp, level)
-    return {
+    lines, _ = ms.build_table(char, skill_name, exp, level)
+    data = {
         "界面": "mastery-ui", "角色": role, "武学": skill_name,
-        "经验值": exp, "等级": level, "十境表数据": table,
+        "十境表": "\n".join(lines) if lines else "", "经验值": exp, "等级": level,
     }
+    if render_mode() != "LLM":
+        table, _ = ms.build_table_struct(char, skill_name, exp, level)
+        data["十境表数据"] = table
+    return data
 
 def _character_detail(slot, role):
     """取单个角色的信息视图（供 character-ui）。
@@ -690,13 +698,17 @@ def build_ui(slot, ui_id, ctx=None):
                 data["删除槽位"] = r["槽位"]
                 break
         return data
-    # title-ui / save-ui：存档列表从 results 提取
+    # title-ui / save-ui：从结算载体提取界面字段
     if ui_id in ("title-ui", "save-ui"):
         data = {"界面": ui_id}
+        keys = ("存档列表",) if ui_id == "save-ui" else (
+            "标题状态", "版本", "存档列表", "创建草稿", "剩余点数",
+            "初始武学列表", "武学详情", "属性说明", "校验提示",
+        )
         for r in (ctx.get("results") or []):
-            if r.get("存档列表") is not None:
-                data["存档列表"] = r["存档列表"]
-                break
+            for key in keys:
+                if r.get(key) is not None:
+                    data[key] = r[key]
         return data
     # gm_error 的 exploration-ui：状态 + 错误（无叙事）
     if ui_id == "exploration-ui" and ctx.get("error"):
@@ -742,7 +754,7 @@ def _resolve_ui_id(valid, results, error, gm_error):
     if t == "武学列表" and a.get("角色"):
         return "wuxue-list-ui"
     # 显式界面类
-    if t == "开始游戏":
+    if t in ("开始游戏", "标题-操作"):
         return "title-ui"
     if t == "存档列表":
         return "save-ui"
@@ -779,6 +791,11 @@ def _build_response(slot, valid, saved, 剩余, results, error=None, gm_error=Fa
             state_slot = r["新建slot"]
             break
     base = {"saved": saved, "剩余": 剩余, "结算": results, "槽位": state_slot}
+    for r in results:
+        if r.get("next_slot") is not None:
+            base["next_slot"] = r["next_slot"]
+        if r.get("错误码"):
+            base["错误码"] = r["错误码"]
     _inject_narrative(base, results)  # 汇总结算里的叙事字段为顶层（旧档/内部调用仍可能带）
     # 结算条目中携带的 GM参考（如主动移动掷随机事件提示）上提顶层并从结算剔除
     #（非状态变更，不混入状态提示）；与自动存档提示合并为同一条。
@@ -811,7 +828,8 @@ def _build_response(slot, valid, saved, 剩余, results, error=None, gm_error=Fa
     # message-ui/exploration-ui(gm_error) 的错误已由 build_ui 注入
     base.update(ui_data)
     if "界面" in base:
-        base["渲染模式"] = os.environ.get("WUXIA_RPG_RENDER_MODULE", "")
+        base["渲染模式"] = render_mode()
+        attach_render_text(base)
     return base
 
 # 界面分发表：ui_id → 构造函数 (slot, ctx) → dict（含 界面 字段）。

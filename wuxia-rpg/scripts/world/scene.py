@@ -27,6 +27,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
 from common.json_io import read_json
+from common.render_mode import is_dsh_mode, render_mode
 from store import save_manager as sm
 
 _SCENES_PATH = os.path.join(HERE, "..", "assets", "data", "scenes.json")
@@ -314,16 +315,21 @@ def build_map(slot, action, explore, resolve_region, station_type):
     total = len(merged)
     remaining = max(0, limit - total)
 
-    # 渲染模式：WUXIA_RPG_RENDER_MODULE=LLM（缺省）→ 文本邻接图；否则（WEB_UI）→ 结构化场景图。
-    # 已知地点/驿站出口/驿站类型/当前区域/当前场景/配额 两种模式均带。
-    llm_mode = os.environ.get("WUXIA_RPG_RENDER_MODULE", "LLM") == "LLM"
+    # 渲染模式（经 common.render_mode 归一，未设置=LLM）：
+    # LLM → 文本邻接图（Markdown 用）；dsh → 结构化场景图（卡片消费，渲染文本为空）；
+    # 其余（WEB_UI 等）→ 场景图+邻接图并存（前端结构化优先，Markdown 兜底）。
+    # 已知地点/驿站出口/驿站类型/当前区域/当前场景/配额 各模式均带。
+    mode = render_mode()
     payload = {"界面": "map-ui", "当前区域": region, "当前场景": scene,
                "驿站出口": station_exit, "驿站类型": stype,
                "已知地点": known, "上限": limit, "剩余配额": remaining}
-    if llm_mode:
+    if mode == "LLM":
         payload["邻接图"] = adj_tree
+    elif is_dsh_mode():
+        payload["场景图"] = merged
     else:
         payload["场景图"] = merged
+        payload["邻接图"] = adj_tree
     return payload
 
 

@@ -5,12 +5,12 @@
       "name": "wuxia_go",
       "operation": "go",
       "title": "武侠 go",
-      "description": "武侠RPG 玩家主动指令的机制结算（go）。传入 槽位（存档号）与 行为 数组，返回含 界面 字段的结果。不增轮次、不自动存档。",
+      "description": "武侠RPG 玩家主动指令的机制结算（go）。无界面成功后必须继续 judge；待 judge 时重复 go 会被阶段门禁拒绝。不增轮次、不自动存档。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "槽位": {"type": "integer", "description": "当前存档槽位号；开始游戏传0，创建角色传开始游戏返回的next_slot"},
           "行为": {"type": "array", "description": "go 行为数组", "items": {"type": "object", "additionalProperties": true}}
         },
         "required": ["槽位", "行为"]
@@ -20,7 +20,14 @@
         "additionalProperties": true,
         "properties": {
           "界面": {"type": "string"},
-          "错误": {"type": "string"}
+          "渲染模式": {"type": "string", "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"},
+          "渲染文本": {"type": "string", "description": "界面完整 Markdown；GM 严格原样输出、不改写或润色，包括空字符串"},
+          "错误": {"type": "string"},
+          "错误码": {"type": "string", "description": "业务错误稳定标识，如slot_occupied"},
+          "next_slot": {"type": "integer", "description": "开始游戏或创建槽位冲突时返回的最新可用槽位"},
+          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
+          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"},
+          "go_result": {"type": "object", "description": "重复 go 时返回的既有结算", "additionalProperties": true}
         }
       }
     },
@@ -28,7 +35,7 @@
       "name": "wuxia_judge",
       "operation": "judge",
       "title": "武侠 judge",
-      "description": "武侠RPG GM 推演后的裁定落盘（judge）。承载顶层叙事字段与行为数组（状态变更）。仅返回 exploration-ui 的 judge 才推进轮次。注意：arguments 必须是合法 JSON；当前剧情等字符串值内不得出现未转义的半角双引号（引用对话/字词一律用「」），不得含裸换行。",
+      "description": "武侠RPG GM 推演后的裁定落盘（judge）。仅在 go 返回无界面后调用；失败时修正并重试 judge，不得重跑 go。仅 exploration-ui 推进轮次。arguments 必须是合法 JSON，字符串内不得出现未转义的半角双引号或裸换行。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -46,7 +53,11 @@
         "additionalProperties": true,
         "properties": {
           "界面": {"type": "string"},
-          "错误": {"type": "string"}
+          "渲染模式": {"type": "string", "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"},
+          "渲染文本": {"type": "string", "description": "界面完整 Markdown；GM 严格原样输出、不改写或润色，包括空字符串"},
+          "错误": {"type": "string"},
+          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
+          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
         }
       }
     },
@@ -54,7 +65,7 @@
       "name": "wuxia_check",
       "operation": "check",
       "title": "武侠 check",
-      "description": "武侠RPG 判定掷骰。GM 推演剧情前，若本回合依赖角色某项技艺/属性水平高低，先调此工具掷骰，并据结果（成功/失败）推演。掷骰结果会留痕，judge 时核对是否已高亮带入剧情。判断是否触发随机事件请用 wuxia_random_event 工具。",
+      "description": "武侠RPG 判定掷骰。仅在 go 已完成、等待 judge 时调用；结果会留痕，judge 时核对是否已高亮带入剧情。判断随机事件请用 wuxia_random_event。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -73,7 +84,9 @@
         "properties": {
           "结果": {"type": "string"},
           "提示": {"type": "string"},
-          "错误": {"type": "string"}
+          "错误": {"type": "string"},
+          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
+          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
         }
       }
     },
@@ -81,7 +94,7 @@
       "name": "wuxia_random_event",
       "operation": "random-event",
       "title": "武侠 random-event",
-      "description": "武侠RPG 随机事件判定。移动等行动按基础触发率判断是否触发随机事件（遭遇/发现/天气/传闻/求助）。返回 触发/未触发。不落盘留痕。",
+      "description": "武侠RPG 随机事件判定。仅在 go 已完成、等待 judge 时调用；返回触发/未触发，不落盘留痕。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -97,7 +110,9 @@
         "properties": {
           "结果": {"type": "string"},
           "提示": {"type": "string"},
-          "错误": {"type": "string"}
+          "错误": {"type": "string"},
+          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
+          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
         }
       }
     },

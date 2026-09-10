@@ -22,6 +22,7 @@ from settle.engine_io import _build_state, _clear_battle_tmp, _derive_caps, _ens
 from store.battle_last import read_battle_last as _read_battle_last, write_battle_last as _write_battle_last
 from settle.engine_fields import _FIELD_HANDLERS, _apply_mastery, _carry_item_op, _carry_skill_op, _chg_carry_item, _chg_carry_skill, _chg_equip, _chg_party, _chg_xinfa
 from settle.engine_ui import _REST_TIERS, _STATION_PRICE, _build_inn, _character_detail, _norm_elements, merchant_buy, merchant_sell
+from settle.title_flow import build_character, handle_title_action
 
 # 行为类型 → (体力消耗, 时间消耗(刻))；休息/远行（徒步/舟车）/战斗 特殊处理，不在此表
 _ACTION_STAMINA = {"攻击": 1, "使用物品": 1, "购买": 2, "出售": 2, "遣散": 1, "其他行为": 4, "交谈观察": 1, "赠与物品": 1}
@@ -618,16 +619,14 @@ def _act_battle_trigger(slot, explore, action):
 def _act_battle_advance(slot, explore, action):
     """战斗-推进（judge 专属）：把上一轮战斗操控 go 的结算打包成 battle-ui。
 
-    战斗操控 go（战斗-使用武学等）一律无界面：机制后果已落盘，且本轮 战报+回合详情
-    已缓存进 battle_last.json。本条目即：读缓存 → GM 润色后的 战报文本 覆盖原战报
-    （缺省沿用引擎原文）→ 附带 回合详情（应照传 go 返回，缺省沿用缓存）→ battle-ui。
+    战斗操控 go（战斗-使用武学等）已把规范战报与回合详情缓存进 battle_last.json；
+    本条目只读取该底稿并附带兼容的结构化回合详情，不接受 GM 改写战报。
     """
+    if "战报文本" in action:
+        return [{"ok": False, "msg": "战斗-推进不再接受 战报文本；请删除该字段并重试，engine 会使用已缓存的规范战报"}]
     bt_data = _read_battle_last(slot)
     if bt_data is None:
         return [{"ok": False, "msg": "本轮无可推进的战斗（战斗操控 go 的结算未找到，须先执行战斗操控 go）"}]
-    text = action.get("战报文本")
-    if text is not None:
-        bt_data["战报"] = str(text)
     details = action.get("回合详情")
     if details is not None:
         bt_data["回合详情"] = details
@@ -927,7 +926,16 @@ def _act_start_game(slot, explore, action):
     sm.ensure_dir()
     _ensure_data_dir()
     saves = sm.list_all_saves()
-    return [{"ok": True, "msg": "开始游戏", "变更": "", "存档列表": saves}]
+    return [{"ok": True, "msg": "开始游戏", "变更": "", "标题状态": "主页",
+             "版本": sm.get_version(), "存档列表": saves,
+             "next_slot": sm.next_slot_number()}]
+
+
+def _act_title(slot, explore, action):
+    """标题页无状态操作：草稿随 action 往返，不在 slot 0 落盘。"""
+    sm.ensure_dir()
+    _ensure_data_dir()
+    return [handle_title_action(action)]
 
 def _act_save_list(slot, explore, action):
     """存档列表：返回 save-ui 界面，含当前 slot 的存档列表（游戏内读档浏览/选择）。
@@ -993,18 +1001,24 @@ def _apply_clue(slot, explore, c):
     return {"ok": True, "msg": f"线索 {name} 已更新", "变更": f"线索 {name} 已更新"}
 
 def _act_create_slot(slot, explore, action):
-    """建档：调 save_manager.create_slot 创建新 slot。角色 dict 由 action.角色 传入。
-
-    兼 原「初入江湖」机械职责：发放起始物资（_grant_starter_pack）、写首份存档（label=初入江湖）。
-    开场白+初始剧情不在此——创建角色 go 无界面（落 _build_response 默认分支），GM 须下调 judge
-    （judge 顶层当前剧情/场景要素/经历概括）完成首屏叙事落盘与 exploration-ui 渲染。
-    返回新 slot 的落点/时辰/剩余（供 GM 据此写开场白）。"""
+    """在指定空闲 slot 建档；支持完整角色或 title-ui 紧凑创建草稿。"""
     char = action.get("角色")
+    if char is None and action.get("创建草稿") is not None:
+        char, error = build_character(action.get("创建草稿"), action.get("初始武学"))
+        if error:
+            return [{"ok": False, "msg": error}]
     if not isinstance(char, dict) or not char.get("名称"):
-        return [{"ok": False, "msg": "创建角色须传入 角色（完整角色 dict，含名称）"}]
-    # 发放起始物资（须在 create_slot 落盘前，随建档一并写入角色文件）
-    sm._grant_starter_pack(char)
-    r = sm.create_slot(char)
+        return [{"ok": False, "msg": "创建角色须传入 角色（完整角色 dict，含名称），或 创建草稿+初始武学"}]
+    if not sm._slot_writable(slot):
+        next_slot = sm.next_slot_number()
+        return [{"ok": False,
+                 "msg": f"创建角色必须传入正整数槽位，最新可用槽位为 {next_slot}",
+                 "错误码": "create_slot_required", "next_slot": next_slot}]
+    try:
+        r = sm.create_slot(char, slot)
+    except sm.SlotOccupiedError as exc:
+        return [{"ok": False, "msg": str(exc), "错误码": exc.code,
+                 "next_slot": exc.next_slot}]
     new_slot = r.get("slot")
     # 落点补场景后缀：create_slot 的落点是纯区域名（read_explore 已修正为 map 节点名），
     # 此处落该区域驿站出口场景，写回新 slot 的 explore.json，使开局相邻出口可用
@@ -1168,6 +1182,7 @@ _ACTION_HANDLERS = {
     "查看地图": _act_map,
     "查看线索": _act_clue,
     "开始游戏": _act_start_game,
+    "标题-操作": _act_title,
     "存档列表": _act_save_list,
     "非法指令": _act_illegal,
     "返回游戏": _act_return_game,

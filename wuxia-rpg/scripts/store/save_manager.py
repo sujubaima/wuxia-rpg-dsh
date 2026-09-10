@@ -221,8 +221,8 @@ def _load_map_overlay(target, slot, save_dir=DEFAULT_SAVE_DIR, payload=None):
     return overlay
 
 
-def _read_version():
-    """从 SKILL.md frontmatter 读取 version 字段，失败回退 '0.0.0'。存档时写入实时版本号。"""
+def get_version():
+    """从 SKILL.md frontmatter 读取实时版本号，失败回退 '0.0.0'。"""
     try:
         with open(SKILL_MD, encoding="utf-8") as f:
             head = f.read(2048)
@@ -232,13 +232,16 @@ def _read_version():
     except Exception:
         pass
     return "0.0.0"
+
+
+# 兼容旧的模块内调用名。
+_read_version = get_version
 # 新角色初入大世界时由 create-slot 自动写入的初始存档 label 与叙事 state
 INITIAL_LABEL = "初入江湖"
 # 落点候选：worldview.md 第二节「游戏区域」开放地区清单，剔除不宜开局区域（如幽冥宫、东洋海岛、关外）
 OPEN_REGIONS = [
-    "苏州城", "杭州城", "泉州港", "南洋海岛", "长沙城", "九嶷山",
-    "巫山", "武当山", "成都城", "峨眉山", "大理", "五瘴林", "洛阳城", "嵩山",
-    "华山", "崆峒山", "北京城", "昆仑山",
+    "苏州城", "杭州城", "泉州港", "长沙城",
+    "成都城", "大理", "洛阳城", "嵩山", "北京城",
 ]
 # 时间换算（time_to_str / time_slot_of / 常量）统一在 time_utils，此处透传复用
 TIME_UNITS_PER_DAY = ut.TIME_UNITS_PER_DAY
@@ -285,6 +288,17 @@ def next_slot_number(save_dir=DEFAULT_SAVE_DIR):
         if m and os.path.isdir(os.path.join(save_dir, fn)):
             max_n = max(max_n, int(m.group(1)))
     return max_n + 1
+
+
+class SlotOccupiedError(Exception):
+    """调用方指定的建档槽位已存在。"""
+
+    code = "slot_occupied"
+
+    def __init__(self, slot, next_slot):
+        self.slot = slot
+        self.next_slot = next_slot
+        super().__init__(f"槽位 {slot} 已被占用，最新可用槽位为 {next_slot}")
 
 
 def read_meta(slot, save_dir=DEFAULT_SAVE_DIR):
@@ -699,47 +713,58 @@ def _init_secondary(character):
     return character
 
 
-def create_slot(character, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
-    """为新建角色占用一个 slot：写时复制——不拷贝 assets/data/，仅建空 slot 目录并写入玩家角色。
+def create_slot(character, slot, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
+    """在调用方指定的空闲 slot 建档；槽位目录以原子创建完成占位。
 
-    character: 角色完整 dict（含 名称 等字段）。写入前自动派生二级属性并初始化气血/内力。
-    玩家角色存于 .data/characters/<门派>/<角色名>.json；其余条目读取时由 dao 透明回退基线
-    assets/data/，故建档无需拷贝全部文件（从 ~24s 降到接近 0）。
-
-    随机抽取落点大区域与起始时辰/时段，初始化 explore.json（建号即写首档，存档由 engine.go 创建角色一并完成），
-    随返回值回传 {slot, 当前位置, 当前时间, 剩余}。剩余为「距下次自动存档 N 轮」。
+    character: 角色完整 dict（含 名称 等字段）。成功占位后发放起始物资、派生二级属性，
+    再写入玩家角色、meta 与初始 explore；失败时不保留半成品槽位。
     """
+    if not isinstance(slot, int) or isinstance(slot, bool) or slot <= 0:
+        raise ValueError("创建角色 slot 必须是正整数")
+    if not isinstance(character, dict) or not character.get("名称"):
+        raise ValueError("创建角色须传入含名称的完整角色 dict")
+
     ensure_dir(save_dir)
-    name = character["名称"]
-    _init_secondary(character)
-    n = next_slot_number(save_dir)
-    # 写时复制：仅建空 slot 目录（.data/characters/ 占位），不拷贝基线；
-    # 玩家角色直接写入 slot，其余条目经 dao 回退基线读取。
-    os.makedirs(os.path.join(slot_data_dir(n, save_dir), "characters"), exist_ok=True)
-    dq.set_data_dir(slot_data_dir(n, save_dir))
-    dq.write_character(name, character)
-    meta = {
-        "slot": n,
-        "角色名": name,
-        "版本": _read_version(),
-        "创建时间": _now_timestamp(),
-        "最近存档": None,
-        "存档数": 0,
-    }
-    write_meta(n, meta, save_dir)
-    region, t = _random_location_time()
-    initial_state = {
-        "经历概括": f"{name}初入江湖。",
-        "任务摘要及进度": [],
-        "队伍": [name],
-        "当前位置": region,
-        "当前时间": t,
-        "体力": STAMINA_MAX,
-    }
-    # 建号时已写首档（engine.go 的 创建角色 一并调 save）——仅初始化 explore.json，使建号返回与 judge 读档可读队伍/位置/时辰
-    write_explore(n, initial_state, save_dir, preserve_narrative=False)
-    write_round(n, 0, save_dir)  # 交互轮次自建档起计，初值 0
-    return {"slot": n, "当前位置": region, "当前时间": t, "剩余": rounds_until_save(n, save_dir)}
+    n = slot
+    root = slot_path(n, save_dir)
+    try:
+        os.mkdir(root)
+    except FileExistsError as exc:
+        raise SlotOccupiedError(n, next_slot_number(save_dir)) from exc
+
+    try:
+        name = character["名称"]
+        _grant_starter_pack(character)
+        _init_secondary(character)
+        # 写时复制：仅建空 .data/characters/，其余条目经 dao 回退基线读取。
+        os.makedirs(os.path.join(slot_data_dir(n, save_dir), "characters"), exist_ok=True)
+        dq.set_data_dir(slot_data_dir(n, save_dir))
+        dq.write_character(name, character)
+        meta = {
+            "slot": n,
+            "角色名": name,
+            "版本": get_version(),
+            "创建时间": _now_timestamp(),
+            "最近存档": None,
+            "存档数": 0,
+        }
+        write_meta(n, meta, save_dir)
+        region, t = _random_location_time()
+        initial_state = {
+            "经历概括": f"{name}初入江湖。",
+            "任务摘要及进度": [],
+            "队伍": [name],
+            "当前位置": region,
+            "当前时间": t,
+            "体力": STAMINA_MAX,
+        }
+        write_explore(n, initial_state, save_dir, preserve_narrative=False)
+        write_round(n, 0, save_dir)
+        return {"slot": n, "当前位置": region, "当前时间": t,
+                "剩余": rounds_until_save(n, save_dir)}
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def character_derived_view(slot, name, save_dir=DEFAULT_SAVE_DIR):
@@ -1261,6 +1286,14 @@ def _cli(argv):
     cmd = argv[0]
 
     if cmd == "create-slot":
+        if len(argv) < 2:
+            print("用法: create-slot <slot>（角色完整 JSON 从 stdin 传入）", file=sys.stderr)
+            return 2
+        try:
+            target_slot = int(argv[1])
+        except ValueError:
+            print("create-slot: slot 必须是正整数", file=sys.stderr)
+            return 2
         raw = sys.stdin.read()
         try:
             character = json.loads(raw)
@@ -1270,7 +1303,11 @@ def _cli(argv):
         if not isinstance(character, dict) or not character.get("名称"):
             print("create-slot: 角色 JSON 缺少「名称」字段", file=sys.stderr)
             return 2
-        info = create_slot(character)
+        try:
+            info = create_slot(character, target_slot)
+        except (ValueError, SlotOccupiedError) as exc:
+            print(f"create-slot: {exc}", file=sys.stderr)
+            return 2
         n = info["slot"]
         view = character_derived_view(n, character["名称"])
         out = {"ok": True, "slot": n, "角色名": character.get("名称"),

@@ -21,6 +21,7 @@ ENGINE = os.path.join(SCRIPTS, "engine.py")
 
 from common import dao as dq
 from store import save_manager as sm
+from store import turn_state
 
 FAILED = []
 
@@ -99,11 +100,36 @@ def main():
 
         # -------- 样例1：建档 --------
         print("== 样例1 建档 ==")
-        r = run_engine(1, {"行为": [{"类型": "创建角色", "角色": char("沈孤鸿")}]}, save_dir=tmp)
+        title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, save_dir=tmp)
+        create_slot = title.get("next_slot")
+        check("开始游戏返回 next_slot", create_slot == 1,
+              f"title={json.dumps(title, ensure_ascii=False)[:200]}")
+        check("标题界面由 engine 直出完整 Markdown",
+              title.get("界面") == "title-ui" and title.get("版本")
+              and isinstance(title.get("渲染文本"), str) and title.get("渲染文本") != "",
+              f"title={json.dumps(title, ensure_ascii=False)[:200]}")
+        wizard = run_engine(0, {"行为": [{"类型": "标题-操作", "操作": "开始创建"}]}, save_dir=tmp)
+        check("标题创建草稿无状态返回",
+              wizard.get("标题状态") == "创建-立名" and isinstance(wizard.get("创建草稿"), dict),
+              f"wizard={json.dumps(wizard, ensure_ascii=False)[:200]}")
+        r = run_engine(create_slot, {"行为": [{"类型": "创建角色", "角色": char("沈孤鸿")}]}, save_dir=tmp)
         check("建档成功无错", r.get("错误") is None and "_rc" not in r, f"r={json.dumps(r, ensure_ascii=False)[:200]}")
         slot = (r.get("结算") or [{}])[0].get("新建slot")
         check("返回新建slot", slot is not None, f"r={json.dumps(r, ensure_ascii=False)[:200]}")
         check("建档带落点", (r.get("结算") or [{}])[0].get("落点"), f"r={json.dumps(r, ensure_ascii=False)[:200]}")
+        check("创建角色后进入待开场 judge",
+              r.get("turn_state") == turn_state.AWAITING_JUDGE
+              and turn_state.read_state(slot, tmp)["origin"] == "创建角色",
+              f"r={json.dumps(r, ensure_ascii=False)[:200]}")
+        blocked = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        check("开场 judge 前拒绝新 go", blocked.get("状态冲突") == "go_already_committed",
+              f"blocked={json.dumps(blocked, ensure_ascii=False)[:200]}")
+        opening = run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿初入江湖。"}, cmd="judge", save_dir=tmp)
+        check("创建角色开场 judge 接通", opening.get("错误") is None
+              and opening.get("界面") == "exploration-ui",
+              f"opening={json.dumps(opening, ensure_ascii=False)[:200]}")
+        check("开场 judge 后回到 READY", opening.get("turn_state") == turn_state.READY,
+              f"opening={json.dumps(opening, ensure_ascii=False)[:200]}")
 
         # -------- 样例2：门厅哨兵 --------
         print("== 样例2 门厅哨兵 ==")
@@ -119,15 +145,33 @@ def main():
         print("== 样例3 go/judge 两步式 ==")
         g = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
         check("go 交谈观察无界面（需调 judge）", "界面" not in g, f"g={list(g.keys())}")
+        check("go 后进入待 judge", g.get("turn_state") == turn_state.AWAITING_JUDGE, f"g={g}")
+        duplicate = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        check("重复 go 被阶段门禁拒绝", duplicate.get("状态冲突") == "go_already_committed",
+              f"duplicate={json.dumps(duplicate, ensure_ascii=False)[:200]}")
+        readonly = run_engine(slot, {"行为": [{"类型": "角色信息", "角色": "沈孤鸿"}]}, save_dir=tmp)
+        check("待 judge 时仍允许只读 go", readonly.get("状态冲突") is None
+              and readonly.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"readonly={json.dumps(readonly, ensure_ascii=False)[:200]}")
         j = run_engine(slot, {"行为": [
             {"类型": "物品", "操作": "减", "角色": "沈孤鸿", "名": "玉佩", "数量": 1},
         ], "当前剧情": "沈孤鸿把玉佩收进怀里。"}, cmd="judge", save_dir=tmp)
         check("judge 正常落盘无错", j.get("错误") is None, f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
         check("judge 返回 exploration-ui", j.get("界面") == "exploration-ui", f"界面={j.get('界面')}")
+        check("judge 后回到 READY", j.get("turn_state") == turn_state.READY, f"j={j}")
+        go_changes = [r.get("变更") for r in (g.get("结算") or []) if r.get("变更")]
+        judged_changes = [r.get("变更") for r in (j.get("结算") or []) if r.get("变更")]
+        check("只读 go 不覆盖待 judge 机制提示",
+              bool(go_changes) and all(change in judged_changes for change in go_changes),
+              f"go={go_changes}, judge={judged_changes}")
         check("落盘后玩家无玉佩", _has_item(slot, "玉佩", tmp, expected=False))
+        duplicate_judge = run_engine(slot, {"行为": [], "当前剧情": "重复裁定。"}, cmd="judge", save_dir=tmp)
+        check("重复 judge 被阶段门禁拒绝", duplicate_judge.get("状态冲突") == "judge_not_expected",
+              f"duplicate_judge={json.dumps(duplicate_judge, ensure_ascii=False)[:200]}")
 
         # -------- 样例4：judge 回滚 --------
         print("== 样例4 judge 回滚 ==")
+        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
         copper_before = _copper(slot, tmp)
         j = run_engine(slot, {"行为": [
             {"类型": "铜钱", "操作": "加", "角色": "沈孤鸿", "值": 100},
@@ -160,6 +204,7 @@ def main():
 
         # -------- 样例5：judge 顶层校验 --------
         print("== 样例5 judge 顶层校验 ==")
+        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
         j = run_engine(slot, {"行为": [], "当前剧情": "x", "非法字段": 1}, cmd="judge", save_dir=tmp)
         check("judge 拒绝非预期顶层字段", j.get("错误") is not None and "非预期字段" in str(j.get("错误", "")),
               f"错误={j.get('错误')}")
@@ -190,6 +235,16 @@ def main():
               and overlay.get("乙地", {}).get("南") == "甲地",
               f"overlay={overlay}")
 
+        print("== 样例6b 读档重置阶段 ==")
+        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        saves = sm.list_saves(slot, tmp)
+        target = saves[-1][0] if saves else None
+        loaded = run_engine(slot, {"行为": [{"类型": "加载存档", "目标": target}]}, save_dir=tmp)
+        check("待 judge 时允许读档恢复", target is not None and loaded.get("错误") is None,
+              f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
+        check("读档后阶段重置 READY", loaded.get("turn_state") == turn_state.READY,
+              f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
+
         # -------- 样例7：查询类带界面 --------
         print("== 样例7 查询类带界面 ==")
         g = run_engine(slot, {"行为": [{"类型": "角色信息", "角色": "沈孤鸿"}]}, save_dir=tmp)
@@ -199,37 +254,76 @@ def main():
 
         # -------- 样例8：战斗流程 --------
         print("== 样例8 战斗流程 ==")
-        # 敌人用基线已有角色（避免重名校验）；战斗-开始为 judge 专属 action
+        # 敌人用基线已有角色（避免重名校验）；攻击 go → 战斗-触发 → 战斗-开始
         enemy = "路不平"
         rnd0 = sm.read_round(slot, tmp)
+        attack = run_engine(slot, {"行为": [{"类型": "攻击", "目标": enemy}]}, save_dir=tmp)
+        check("攻击 go 进入待 judge", attack.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"attack={json.dumps(attack, ensure_ascii=False)[:200]}")
+        triggered = run_engine(slot, {"行为": [{"类型": "战斗-触发", "我方": ["沈孤鸿"],
+                                                "敌方": [enemy], "允许逃跑": True}],
+                                      "当前剧情": "路不平拦路！"}, cmd="judge", save_dir=tmp)
+        check("战斗-触发进入待开始", triggered.get("界面") == "exploration-battle-ui"
+              and triggered.get("turn_state") == turn_state.AWAITING_BATTLE_START,
+              f"triggered={json.dumps(triggered, ensure_ascii=False)[:200]}")
+        blocked_go = run_engine(slot, {"行为": [{"类型": "攻击", "目标": enemy}]}, save_dir=tmp)
+        check("战前选择阶段拒绝 go", blocked_go.get("状态冲突") == "battle_start_expected",
+              f"blocked_go={json.dumps(blocked_go, ensure_ascii=False)[:200]}")
         j = run_engine(slot, {"行为": [{"类型": "战斗-开始", "我方": ["沈孤鸿"], "敌方": [enemy],
                                        "允许逃跑": True, "操控方式": "玩家角色"}],
                            "当前剧情": "路不平拦路！"}, cmd="judge", save_dir=tmp)
         check("战斗-开始被接受无错", j.get("错误") is None and "_rc" not in j,
               f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
+        check("战斗-开始后回到 READY", j.get("turn_state") == turn_state.READY, f"j={j}")
         check("战斗-开始不推进轮次", sm.read_round(slot, tmp) == rnd0,
               f"{rnd0}→{sm.read_round(slot, tmp)}")
         # 战斗中 返回游戏 拒绝（战斗临时文件存在时）
         rg = run_engine(slot, {"行为": [{"类型": "返回游戏"}]}, save_dir=tmp)
         check("战斗中返回游戏拒绝", rg.get("提示") is not None or rg.get("错误") is not None,
               f"rg={json.dumps(rg, ensure_ascii=False)[:150]}")
+        # 非终局战斗轮保留 go → judge 战斗-推进
+        step = run_engine(slot, {"行为": [{"类型": "战斗-休息"}]}, save_dir=tmp)
+        check("战斗操控 go 进入待 judge", step.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"step={json.dumps(step, ensure_ascii=False)[:200]}")
+        advanced = run_engine(slot, {"行为": [{"类型": "战斗-推进", "回合详情": step.get("回合详情") or []}],
+                                     "当前剧情": ""}, cmd="judge", save_dir=tmp)
+        check("战斗-推进返回战斗界面并回到 READY",
+              advanced.get("界面") in ("battle-ui", "battle-end-ui")
+              and advanced.get("turn_state") == turn_state.READY,
+              f"advanced={json.dumps(advanced, ensure_ascii=False)[:200]}")
+        check("战斗界面由 engine 直出完整 Markdown",
+              advanced.get("渲染模式") == "LLM" and isinstance(advanced.get("渲染文本"), str)
+              and advanced.get("渲染文本") != "",
+              f"advanced={json.dumps(advanced, ensure_ascii=False)[:300]}")
         # go 战斗-认输 → 战斗结束（无界面，交 judge）
         g = run_engine(slot, {"行为": [{"类型": "战斗-认输"}]}, save_dir=tmp)
         st = (g.get("战局状态") or {}).get("状态")
         check("战斗-认输结束战斗", st in ("我方认输", "我方胜", "敌方认输", "敌方胜"),
               f"st={st}")
+        check("战斗 go 后进入待 judge", g.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"g={json.dumps(g, ensure_ascii=False)[:200]}")
         # judge 战后处置（战斗-结束）落盘推进轮次
         j = run_engine(slot, {"行为": [{"类型": "战斗-结束"}],
                        "当前剧情": "路不平扬长而去。"}, cmd="judge", save_dir=tmp)
         check("战后处置 judge 落盘", j.get("错误") is None, f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
+        check("战后处置回到 READY", j.get("turn_state") == turn_state.READY, f"j={j}")
         check("战后处置推进轮次", sm.read_round(slot, tmp) == rnd0 + 1,
               f"{rnd0}→{sm.read_round(slot, tmp)}")
 
         # -------- 样例9：判定 CLI --------
         print("== 样例9 判定 CLI ==")
+        blocked_check = run_engine(slot, {"属性": ["身法"], "判定角色": ["沈孤鸿"]}, cmd="check", save_dir=tmp)
+        check("READY 状态拒绝 check", blocked_check.get("状态冲突") == "check_not_expected",
+              f"blocked_check={blocked_check}")
+        blocked_random = run_engine(slot, {"基础成功率": 15}, cmd="random-event", save_dir=tmp)
+        check("READY 状态拒绝 random-event", blocked_random.get("状态冲突") == "random_event_not_expected",
+              f"blocked_random={blocked_random}")
+        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
         c = run_engine(slot, {"基础成功率": 15}, cmd="random-event", save_dir=tmp)
         check("engine random-event 返回结果", c.get("结果") in ("触发", "未触发"), f"c={c}")
         check("engine random-event 带提示", "提示" in c, f"c={c}")
+        check("random-event 不改变待 judge", c.get("turn_state") == turn_state.AWAITING_JUDGE, f"c={c}")
+        run_engine(slot, {"行为": [], "当前剧情": "四周风平浪静。"}, cmd="judge", save_dir=tmp)
 
         # -------- 样例10：数据查询 CLI --------
         print("== 样例10 数据查询 CLI ==")
