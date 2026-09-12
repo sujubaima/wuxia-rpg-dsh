@@ -71,4 +71,4 @@ echo '{"槽位":N,"基础成功率":15}' | python3 scripts/engine.py random-even
 - `基础成功率`通常易70、普通50、困难30、极难15。
 - 判定返回 `结果`与`提示`；数字不向玩家展示。
 
-完整判定原则见 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)「判定系统」，字段定义见 [data-schema.md](./wuxia-rpg-data-schema.md)。
+完整判定原则见 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)「判定系统」，字段定义见 [wuxia-rpg-data-schema.md](./wuxia-rpg-data-schema.md)。

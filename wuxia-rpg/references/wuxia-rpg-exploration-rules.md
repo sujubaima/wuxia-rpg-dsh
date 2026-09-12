@@ -7,14 +7,14 @@ description: 武侠RPG 推演框架与 GM 行为准则。每轮必读。战斗/�
 
 本文件只含每轮必读的核心：推演框架与 GM 行为准则。其余按需读 `rules/` 下分册：
 
-- 战斗：[battle-rules.md](./rules/wuxia-rpg-battle-rules.md)（触战/战斗回合）
-- 地图与场景：[scene-rules.md](./rules/wuxia-rpg-scene-rules.md)（移动/登记场景）
-- NPC 与队伍：[npc-rules.md](./rules/wuxia-rpg-npc-rules.md)（涉及 NPC/队友）
-- 线索系统：[clue-rules.md](./rules/wuxia-rpg-clue-rules.md)（涉及线索）
-- 判定系统：[check-rules.md](./rules/wuxia-rpg-check-rules.md)（需要判定）
-- 随机事件/时间/状态：[world-rules.md](./rules/wuxia-rpg-world-rules.md)（移动/远行）
+- 战斗：[wuxia-rpg-battle-rules.md](./rules/wuxia-rpg-battle-rules.md)（触战/战斗回合）
+- 地图与场景：[wuxia-rpg-scene-rules.md](./rules/wuxia-rpg-scene-rules.md)（移动/登记场景）
+- NPC 与队伍：[wuxia-rpg-npc-rules.md](./rules/wuxia-rpg-npc-rules.md)（涉及 NPC/队友）
+- 线索系统：[wuxia-rpg-clue-rules.md](./rules/wuxia-rpg-clue-rules.md)（涉及线索）
+- 判定系统：[wuxia-rpg-check-rules.md](./rules/wuxia-rpg-check-rules.md)（需要判定）
+- 随机事件/时间/状态：[wuxia-rpg-world-rules.md](./rules/wuxia-rpg-world-rules.md)（移动/远行）
 
-精确 action 参数见 [actions.md](./wuxia-rpg-actions.md)，查询与掷骰命令见 [dao-query.md](./wuxia-rpg-dao-query.md)，界面格式见各 UI 文档。
+精确 action 参数见 [wuxia-rpg-actions.md](./wuxia-rpg-actions.md)，查询与掷骰命令见 [wuxia-rpg-dao-query.md](./wuxia-rpg-dao-query.md)，界面格式见各 UI 文档。
 
 ## 推演框架
 
@@ -40,7 +40,7 @@ description: 武侠RPG 推演框架与 GM 行为准则。每轮必读。战斗/�
 1. **状态以 engine 为准**：玩家行动的机制后果经 `engine go`；GM 推演产生的关系度、经验、物品、生死等变化经 `engine judge` 落盘。不得凭叙事擅自宣布状态已变。临时 NPC 若要承载持久变化，须先落盘。
 2. **设定先核实**：提及门派或角色，尤其身份职位时，先用 `wuxia_setting`（不可用时回退 `engine setting`）查询。已死角色不得正面登场、对话、参战或推动剧情，只可由转述、回忆、尸首等间接提及。
 3. **不得自创武学、物品、门派**：只能使用预设数据。可创中小规模镖局、帮会、商号或地方势力，但数据层统一归属「江湖」，不得新增阵营条目。
-4. **风俗名物须有依据**：明中晚期衣食住行、器物、娱乐等参考 [ming-customs.md](./wuxia-rpg-ming-customs.md)，不得时代错置；引用诗文、戏文、典故须核实出处。
+4. **风俗名物须有依据**：明中晚期衣食住行、器物、娱乐等参考 [wuxia-rpg-ming-customs.md](./wuxia-rpg-ming-customs.md)，不得时代错置；引用诗文、戏文、典故须核实出处。
 
 ### 一致性与玩家权限
 

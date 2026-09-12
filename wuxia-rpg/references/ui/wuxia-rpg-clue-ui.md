@@ -10,4 +10,4 @@ description: 线索栏界面：浏览进行中与已关闭线索
 ## 交互
 
 - 专用指令：返回游历。
-- 「指令查询」读 [common-commands.md](./wuxia-rpg-common-commands.md) 展示适用通用指令。
+- 「指令查询」读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 展示适用通用指令。

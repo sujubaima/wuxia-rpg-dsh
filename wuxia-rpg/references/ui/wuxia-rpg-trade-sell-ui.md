@@ -11,4 +11,4 @@ description: 出售界面：选定出售物品与数量
 
 - 价格为 engine 单件估价，总价由 engine 结算。
 - 专用指令：出售 [物品] [数量]、返回游历。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

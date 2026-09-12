@@ -54,7 +54,7 @@ description: 武侠RPG 战斗规则（触发、经验、战后处置、战利品
 - 平局：双方存活，不处决、不发经验，由 GM 合理推动收场。
 - 杀放可影响相关人物关系度，GM 据人设裁定。
 
-战后 judge 一次性落盘：杀放结果、胜方经验、`战斗-结束`、关系度及其他后果。具体条目见 [actions.md](../wuxia-rpg-actions.md)；我方胜终局见 [battle-end-ui.md](../ui/wuxia-rpg-battle-end-ui.md)，其余战局见 [battle-ui.md](../ui/wuxia-battle-ui.md)。
+战后 judge 一次性落盘：杀放结果、胜方经验、`战斗-结束`、关系度及其他后果。具体条目见 [wuxia-rpg-actions.md](../wuxia-rpg-actions.md)；我方胜终局见 [wuxia-rpg-battle-end-ui.md](../ui/wuxia-rpg-battle-end-ui.md)，其余战局见 [wuxia-battle-ui.md](../ui/wuxia-battle-ui.md)。
 
 自创 NPC 需死亡时，若尚未落盘，可在同轮 judge 先「写角色」再「死亡」；已落盘者直接处决。死亡后不得正面登场。
 

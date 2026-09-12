@@ -11,4 +11,4 @@ description: 游戏内读档界面：当前槽位存档点的选择与返回
 
 - 玩家选择 File_N 后，以该存档目标调用 `加载存档`，返回 exploration-ui。
 - 玩家选择返回时调用 `返回游戏` 回放当前 exploration-ui；不返回标题页，也不浏览其他 slot。
-- 「指令查询」读 [common-commands.md](./wuxia-rpg-common-commands.md) 展示适用通用指令。
+- 「指令查询」读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 展示适用通用指令。

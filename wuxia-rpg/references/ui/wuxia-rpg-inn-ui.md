@@ -11,4 +11,4 @@ description: 客栈休息界面：选择休息等级
 
 - 玩家选择后，以该等级、`时长:32` 及场景裁定的 `免费` 参数调用 `休息`；不替玩家选择。
 - 专用指令：休息 [等级]、返回游历。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

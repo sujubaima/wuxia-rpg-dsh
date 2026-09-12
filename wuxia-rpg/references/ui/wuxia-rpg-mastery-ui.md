@@ -10,4 +10,4 @@ description: 武学精进界面：查看十境表并精进下一境
 ## 交互
 
 - 专用指令：精进下一境界、更换武学 [武学]、返回游历。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

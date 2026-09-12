@@ -5,7 +5,7 @@ description: battle_engine.py 战斗内核、AI决策、统一战斗阶段与 ba
 
 # 战斗引擎内核
 
-本文件供理解和扩展代码；日常战斗由 `engine.py`协调 `battle.py`，GM 推演与界面规则见 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)和 [battle-ui.md](./ui/wuxia-rpg-battle-ui.md)。
+本文件供理解和扩展代码；日常战斗由 `engine.py`协调 `battle.py`，GM 推演与界面规则见 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)和 [wuxia-rpg-battle-ui.md](./ui/wuxia-rpg-battle-ui.md)。
 
 ## 流程与模式
 
@@ -112,4 +112,4 @@ AI 从可用武学×目标、可用物品、休息、逃跑、认输中统一评
 | `get_active_skill_names` | 可上场主动武学，最多4门 |
 | `get_battle_items` | 可上场消耗品，最多4类 |
 
-公式见 [formulas.md](./wuxia-rpg-formulas.md)，命令示例见 battle.py 帮助与 battle-ui。
+公式见 [wuxia-rpg-formulas.md](./wuxia-rpg-formulas.md)，命令示例见 battle.py 帮助与 battle-ui。

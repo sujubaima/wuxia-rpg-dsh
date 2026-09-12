@@ -11,4 +11,4 @@ description: 角色信息界面：查看派生属性、配置与装备
 
 - 专用指令：查看其他角色 [名称]、返回游历。
 - 界面不展示阵营、关系度、完整武学栏或完整物品栏。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

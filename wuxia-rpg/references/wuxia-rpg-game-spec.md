@@ -5,7 +5,7 @@ description: 武侠RPG每回合强制自检清单（静默、时序、判定、�
 
 # 大世界游戏规范（强制）
 
-每回合 go/judge 前及输出界面前逐条自检，缺一即修正重做。本文只列强制检查；完整推演机制见 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)，行为参数见 [actions.md](./wuxia-rpg-actions.md)，界面细则见对应 UI 文档。
+每回合 go/judge 前及输出界面前逐条自检，缺一即修正重做。本文只列强制检查；完整推演机制见 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)，行为参数见 [wuxia-rpg-actions.md](./wuxia-rpg-actions.md)，界面细则见对应 UI 文档。
 
 > **数据红线**：禁止直接修改 `assets/data/`、存档目录或任何数据 JSON。玩家行为只经 engine go，临时 NPC 与剧情状态变化只经 engine judge，其他数据操作使用专用脚本。
 
@@ -25,14 +25,14 @@ description: 武侠RPG每回合强制自检清单（静默、时序、判定、�
 
 仅 go **没有 `界面` 字段**时才调 judge；有界面直接渲染。judge 的剧情与状态变化必须基于 go 真实结果，不得提前写定。
 
-1. **完整规则**：本轮需要 GM 推演时，是否已整份读取 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)？
+1. **完整规则**：本轮需要 GM 推演时，是否已整份读取 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)？
 2. **判定**：发展是否依赖技艺或一级属性高低？若是，是否先调 `wuxia_check`（不可用时回退 `engine check`），再严格据结果推演？未判直接写定成败即违规。
 3. **数据**：铜钱、经验、关系度、物品、装备、队伍、气血内力、体力、位置、武学、生死等变化，是否全部转为合法状态变更条目？无变化则不传。
 4. **场景**：本轮是否提及后续允许前往的新地点？若是，是否当回合登记；暂不可达者是否登记为孤点？需要改连通关系时是否先隔离？
 5. **线索**：是否只有实质进展才更新？本轮是增补旧节点还是追加新节点？提交时是否包含该线索完整节点列表？
 6. **奖励**：是否仅在阶段成果、关键转折或线索解决时发放，并同步回填节点奖励与状态变更？
 7. **概括**：`经历概括`是否合并、删除无后续影响的旧内容，而非只增不减？
-8. **战斗终局**：是否按胜负完成逐人杀放、逃走者排除、经验分发及 `战斗-结束`？我方胜是否先经 battle-end-ui 收齐玩家决定；我方败/平局是否由 GM 完成敌方处置？分别见 [battle-end-ui.md](./ui/wuxia-rpg-battle-end-ui.md) 与 [battle-ui.md](./ui/wuxia-rpg-battle-ui.md)。
+8. **战斗终局**：是否按胜负完成逐人杀放、逃走者排除、经验分发及 `战斗-结束`？我方胜是否先经 battle-end-ui 收齐玩家决定；我方败/平局是否由 GM 完成敌方处置？分别见 [wuxia-rpg-battle-end-ui.md](./ui/wuxia-rpg-battle-end-ui.md) 与 [wuxia-rpg-battle-ui.md](./ui/wuxia-rpg-battle-ui.md)。
 
 ## 四、输出界面前检查
 
@@ -42,7 +42,7 @@ description: 武侠RPG每回合强制自检清单（静默、时序、判定、�
 2. **状态提示位置**：置于剧情描写之后、周围情况之前，反引号高亮，一行一条。
 3. **结算完整**：逐条核对 go 与 judge 的 `结算` 数组，所有体力、时间、获物、金钱、经验、关系度、线索及自动存档提示均已展示，不得拼行或遗漏。
 4. **数值来源**：体力、时间、时段、位置、金钱、剩余轮数及队伍气血内力全部取 engine 最新返回，不编造、不沿用旧值。
-5. **判定展示**：是否按 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)「判定系统」处理？判定提示不得进入状态变更、`结算`或剧情后的状态提示位。
+5. **判定展示**：是否按 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)「判定系统」处理？判定提示不得进入状态变更、`结算`或剧情后的状态提示位。
 6. **错误处理**：judge 返回 `错误` 属 GM 结算问题，修正后重调，不向玩家展示；message-ui 的 `提示` 才是玩家可见信息。
 
 ## 五、战斗交互检查
@@ -51,4 +51,4 @@ description: 武侠RPG每回合强制自检清单（静默、时序、判定、�
 - 非终局战斗 go 后是否仅调一次 `战斗-推进`，且未传 `战报文本`、未重跑 action？
 - 战局终止后是否按胜负完成处决、经验及 `战斗-结束`，而非直接跳回 exploration-ui？
 
-交互路由见 [battle-ui.md](./ui/wuxia-rpg-battle-ui.md) 与 [battle-end-ui.md](./ui/wuxia-rpg-battle-end-ui.md)。
+交互路由见 [wuxia-rpg-battle-ui.md](./ui/wuxia-rpg-battle-ui.md) 与 [wuxia-rpg-battle-end-ui.md](./ui/wuxia-rpg-battle-end-ui.md)。

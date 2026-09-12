@@ -5,7 +5,7 @@ description: engine go 行为、配置操作、战斗条目与 judge 状态变�
 
 # 行为与状态变更契约
 
-本文件是 `行为` 数组参数的唯一权威来源。意图路由见 [SKILL.md](../SKILL.md)，推演原则见 [exploration-rules.md](./wuxia-rpg-exploration-rules.md)。
+本文件是 `行为` 数组参数的唯一权威来源。意图路由见 [SKILL.md](../SKILL.md)，推演原则见 [wuxia-rpg-exploration-rules.md](./wuxia-rpg-exploration-rules.md)。
 
 - **go 行为**：玩家主动指令；行为类通常消耗体力/时间，配置与查询类不消耗。
 - **judge 条目**：GM 推演结果，包括状态变更及战斗触发/开始/推进。

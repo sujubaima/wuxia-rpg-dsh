@@ -11,4 +11,4 @@ description: 驿站出行界面：选择直达目的地
 
 - 玩家选定后再带目的地调用 `远行（舟车）`；只按 engine 返回的直达路线执行，不替玩家规划中转或选择目的地。
 - 专用指令：前往 [目的地]、返回游历。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

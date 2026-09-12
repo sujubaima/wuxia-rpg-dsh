@@ -5,7 +5,7 @@ description: 武侠RPG世界观入口文档（世界观叙述 + 已开放地区 
 
 # 世界观与背景
 
-大世界探索入口文档。本文只记**世界观叙述、已开放地区、地区故事线索引**；故事线细节见 [storylines.md](./wuxia-rpg-storylines.md)，玩家涉入对应地区/事件时按需补读；门派、人物和武学具体设定见文末「设定查询」。
+大世界探索入口文档。本文只记**世界观叙述、已开放地区、地区故事线索引**；故事线细节见 [wuxia-rpg-storylines.md](./wuxia-rpg-storylines.md)，玩家涉入对应地区/事件时按需补读；门派、人物和武学具体设定见文末「设定查询」。
 
 ## 一、世界观与背景的整体叙述
 
@@ -63,7 +63,7 @@ description: 武侠RPG世界观入口文档（世界观叙述 + 已开放地区 
 
 ## 三、地区故事线索引
 
-全局鸟瞰——各区域挂哪些活跃线，**判定地域归属（准则第16条）与设计引子时查此表**；具体展开补读 [storylines.md](./wuxia-rpg-storylines.md) 对应区块。
+全局鸟瞰——各区域挂哪些活跃线，**判定地域归属（准则第16条）与设计引子时查此表**；具体展开补读 [wuxia-rpg-storylines.md](./wuxia-rpg-storylines.md) 对应区块。
 
 | 区域 | 故事线/伏笔（详见 storylines.md） |
 |------|----------------------------------|
@@ -80,4 +80,4 @@ description: 武侠RPG世界观入口文档（世界观叙述 + 已开放地区 
 
 ## 设定查询
 
-门派、人物与武学具体设定须按需使用 [dao-query.md](./wuxia-rpg-dao-query.md) 查询，不直接读取数据文件；字段含义见 [data-schema.md](./wuxia-rpg-data-schema.md)。
+门派、人物与武学具体设定须按需使用 [wuxia-rpg-dao-query.md](./wuxia-rpg-dao-query.md) 查询，不直接读取数据文件；字段含义见 [wuxia-rpg-data-schema.md](./wuxia-rpg-data-schema.md)。

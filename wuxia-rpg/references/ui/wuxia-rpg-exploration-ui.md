@@ -9,13 +9,13 @@ description: 大世界主界面：首屏开场白、判定结果归属与交互�
 
 ## 交互
 
-- 玩家输入「指令查询」时，先列本界面专用的自由行动说明，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 玩家输入「指令查询」时，先列本界面专用的自由行动说明，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
 - NPC 对话用引号，结构化名单中的人名用反引号；关系度变化不报数字，以态度表现。
 - 隐藏要素不写入 `场景要素`，待调查揭示。
 
 ## 判定结果
 
-判定提示属于 `剧情描写`，不属于剧情后的状态变化提示；具体格式、位置及数据后果处理见 [exploration-rules.md](../wuxia-rpg-exploration-rules.md)「判定系统」。
+判定提示属于 `剧情描写`，不属于剧情后的状态变化提示；具体格式、位置及数据后果处理见 [wuxia-rpg-exploration-rules.md](../wuxia-rpg-exploration-rules.md)「判定系统」。
 
 ## 首屏开场白
 

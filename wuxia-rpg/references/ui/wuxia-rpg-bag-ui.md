@@ -10,4 +10,4 @@ engine 返回本界面时正文由 `渲染文本` 直出。来源：`查看背�
 ## 交互
 
 - 专用指令：使用 [物品]、筛选 [类型/子类型/适用场合]、返回游历。
-- 「指令查询」先列上述专用指令，再读 [common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。
+- 「指令查询」先列上述专用指令，再读 [wuxia-rpg-common-commands.md](./wuxia-rpg-common-commands.md) 补充通用指令。

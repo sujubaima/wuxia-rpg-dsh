@@ -10,17 +10,17 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
 
 | 文档 | 功能 | 读取时机 |
 |------|------|----------|
-| [game-spec.md](./references/wuxia-rpg-game-spec.md) | 每回合强制自检（静默、时序、数据、线索、界面） | **必读** |
-| [worldview.md](./references/wuxia-rpg-worldview.md) | 世界观、地区与故事线索引 | **必读** |
-| [roster.md](./references/wuxia-rpg-roster.md) | 预设人物名册（按阵营；含人设与关联人物） | 涉入或引用人物时 |
-| [exploration-rules.md](./references/wuxia-rpg-exploration-rules.md) | 推演框架与 GM 行为准则；战斗/场景/NPC/线索/判定/随机事件等分册按需读 | **必读** |
-| [actions.md](./references/wuxia-rpg-actions.md) | go 行为、配置、战斗与 judge 状态变更参数 | 组装 `行为` 数组或落盘状态变更时 |
-| [data-schema.md](./references/wuxia-rpg-data-schema.md) | 角色、武学、物品、状态、阵营字段 | 创建角色、写临时 NPC 或查字段时 |
-| [storylines.md](./references/wuxia-rpg-storylines.md) | 各地区故事线与伏笔 | 玩家涉入对应地区、人物或线索时 |
-| [ming-customs.md](./references/wuxia-rpg-ming-customs.md) | 明中晚期衣食住行与社会风俗 | 描写市井、器物、名物与风土时 |
-| [dao-query.md](./references/wuxia-rpg-dao-query.md) | 数据、地图与判定接口 | 核实设定、属性、场景或执行判定时 |
-| [battle-system.md](./references/wuxia-rpg-battle-system.md) | 战斗引擎机制 | 玩家询问战斗机制或调试时 |
-| [formulas.md](./references/wuxia-rpg-formulas.md) | 战斗数值公式 | 玩家询问具体公式时 |
+| [wuxia-rpg-game-spec.md](./references/wuxia-rpg-game-spec.md) | 每回合强制自检（静默、时序、数据、线索、界面） | **必读** |
+| [wuxia-rpg-worldview.md](./references/wuxia-rpg-worldview.md) | 世界观、地区与故事线索引 | **必读** |
+| [wuxia-rpg-roster.md](./references/wuxia-rpg-roster.md) | 预设人物名册（按阵营；含人设与关联人物） | 涉入或引用人物时 |
+| [wuxia-rpg-exploration-rules.md](./references/wuxia-rpg-exploration-rules.md) | 推演框架与 GM 行为准则；战斗/场景/NPC/线索/判定/随机事件等分册按需读 | **必读** |
+| [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) | go 行为、配置、战斗与 judge 状态变更参数 | 组装 `行为` 数组或落盘状态变更时 |
+| [wuxia-rpg-data-schema.md](./references/wuxia-rpg-data-schema.md) | 角色、武学、物品、状态、阵营字段 | 创建角色、写临时 NPC 或查字段时 |
+| [wuxia-rpg-storylines.md](./references/wuxia-rpg-storylines.md) | 各地区故事线与伏笔 | 玩家涉入对应地区、人物或线索时 |
+| [wuxia-rpg-ming-customs.md](./references/wuxia-rpg-ming-customs.md) | 明中晚期衣食住行与社会风俗 | 描写市井、器物、名物与风土时 |
+| [wuxia-rpg-dao-query.md](./references/wuxia-rpg-dao-query.md) | 数据、地图与判定接口 | 核实设定、属性、场景或执行判定时 |
+| [wuxia-rpg-battle-system.md](./references/wuxia-rpg-battle-system.md) | 战斗引擎机制 | 玩家询问战斗机制或调试时 |
+| [wuxia-rpg-formulas.md](./references/wuxia-rpg-formulas.md) | 战斗数值公式 | 玩家询问具体公式时 |
 
 ---
 
@@ -49,20 +49,20 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
 2. **go 机制结算**：调 engine go（方式见下「engine 调用」），读取返回的 `界面`：
    - 有 `界面`：按「界面渲染」输出（见下）。
    - 无 `界面`：基于 go 的真实结果推演剧情，再进入 judge。
-3. **judge 剧情落盘**：完整读取 `exploration-rules.md`，按 `game-spec.md` 自检；先完成必要判定，再提交剧情、场景要素和全部状态变更。
+3. **judge 剧情落盘**：完整读取 `wuxia-rpg-exploration-rules.md`，按 `wuxia-rpg-game-spec.md` 自检；先完成必要判定，再提交剧情、场景要素和全部状态变更。
 4. **渲染**：按「界面渲染」原样输出 engine 返回。
 
 ```text
 玩家输入 → go → 有界面则渲染；无界面则判定/推演 → judge → 渲染 → 等待输入
 ```
 
-**全程静默**：go、必要的判定、judge 与自检完成前，不输出说明、草稿或思考过程。完整强制检查见 [game-spec.md](./references/wuxia-rpg-game-spec.md)。
+**全程静默**：go、必要的判定、judge 与自检完成前，不输出说明、草稿或思考过程。完整强制检查见 [wuxia-rpg-game-spec.md](./references/wuxia-rpg-game-spec.md)。
 
 ---
 
 ## 指令路由
 
-GM 从自然语言提取地点、目标、角色、物品、武学、数量等参数。一条输入可对应多个 go 行为；精确参数与语义见 [actions.md](./references/wuxia-rpg-actions.md)。
+GM 从自然语言提取地点、目标、角色、物品、武学、数量等参数。一条输入可对应多个 go 行为；精确参数与语义见 [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md)。
 
 | 玩家意图 | action / 处理 |
 |----------|---------------|
@@ -109,7 +109,7 @@ echo '{"槽位":<slot>,"行为":[...],"当前剧情":"...","场景要素":[...]}
 echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts/engine.py query
 ```
 
-完整查询参数见 [dao-query.md](./references/wuxia-rpg-dao-query.md)。
+完整查询参数见 [wuxia-rpg-dao-query.md](./references/wuxia-rpg-dao-query.md)。
 
 - `槽位` 为存档编号。`开始游戏`传 `0`并返回 `next_slot`；`创建角色`必须使用该编号，冲突时按错误中的最新 `next_slot`重试。
 - go 只承载玩家主动指令。返回有 `界面` 时按「界面渲染」输出；无 `界面` 时才调 judge。
@@ -125,7 +125,7 @@ echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts
 - 休息、徒步/舟车远行、交谈观察、其他行为及战斗操控通常无 go 界面，须续调 judge；配置、查询、存档和子界面操作通常直接返回界面。
 - 不论 go 或 judge，只要 engine 返回 `界面`，即把游戏主导权交回玩家，等待其下一步输入；禁止自行替玩家做出下一步决策。
 
-行为参数、顶层叙事字段与状态变更格式以 [actions.md](./references/wuxia-rpg-actions.md) 为唯一权威来源。
+行为参数、顶层叙事字段与状态变更格式以 [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) 为唯一权威来源。
 
 ---
 
@@ -133,26 +133,26 @@ echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts
 
 | `界面` | 界面文档 |
 |--------|----------|
-| `exploration-ui` | [exploration-ui.md](./references/ui/wuxia-rpg-exploration-ui.md) |
-| `title-ui` | [title-ui.md](./references/ui/wuxia-rpg-title-ui.md) |
-| `save-ui` | [save-ui.md](./references/ui/wuxia-rpg-save-ui.md) |
-| `battle-ui` | [battle-ui.md](./references/ui/wuxia-rpg-battle-ui.md) |
-| `battle-end-ui` | [battle-end-ui.md](./references/ui/wuxia-rpg-battle-end-ui.md) |
-| `exploration-battle-ui` | [exploration-battle-ui.md](./references/ui/wuxia-rpg-exploration-battle-ui.md) |
-| `wuxue-ui` | [wuxue-ui.md](./references/ui/wuxia-rpg-wuxue-ui.md) |
-| `equip-ui` | [equip-ui.md](./references/ui/wuxia-rpg-equip-ui.md) |
-| `item-ui` | [item-ui.md](./references/ui/wuxia-rpg-item-ui.md) |
-| `mastery-ui` | [mastery-ui.md](./references/ui/wuxia-rpg-mastery-ui.md) |
-| `character-ui` | [character-ui.md](./references/ui/wuxia-rpg-character-ui.md) |
-| `bag-ui` | [bag-ui.md](./references/ui/wuxia-rpg-bag-ui.md) |
-| `travel-ui` | [travel-ui.md](./references/ui/wuxia-rpg-travel-ui.md) |
-| `inn-ui` | [inn-ui.md](./references/ui/wuxia-rpg-inn-ui.md) |
-| `wuxue-list-ui` | [wuxue-list-ui.md](./references/ui/wuxia-rpg-wuxue-list-ui.md) |
-| `trade-buy-ui` | [trade-buy-ui.md](./references/ui/wuxia-rpg-trade-buy-ui.md) |
-| `trade-sell-ui` | [trade-sell-ui.md](./references/ui/wuxia-rpg-trade-sell-ui.md) |
-| `message-ui` | [message-ui.md](./references/ui/wuxia-rpg-message-ui.md) |
-| `map-ui` | [map-ui.md](./references/ui/wuxia-rpg-map-ui.md) |
-| `clue-ui` | [clue-ui.md](./references/ui/wuxia-rpg-clue-ui.md) |
+| `exploration-ui` | [wuxia-rpg-exploration-ui.md](./references/ui/wuxia-rpg-exploration-ui.md) |
+| `title-ui` | [wuxia-rpg-title-ui.md](./references/ui/wuxia-rpg-title-ui.md) |
+| `save-ui` | [wuxia-rpg-save-ui.md](./references/ui/wuxia-rpg-save-ui.md) |
+| `battle-ui` | [wuxia-rpg-battle-ui.md](./references/ui/wuxia-rpg-battle-ui.md) |
+| `battle-end-ui` | [wuxia-rpg-battle-end-ui.md](./references/ui/wuxia-rpg-battle-end-ui.md) |
+| `exploration-battle-ui` | [wuxia-rpg-exploration-battle-ui.md](./references/ui/wuxia-rpg-exploration-battle-ui.md) |
+| `wuxue-ui` | [wuxia-rpg-wuxue-ui.md](./references/ui/wuxia-rpg-wuxue-ui.md) |
+| `equip-ui` | [wuxia-rpg-equip-ui.md](./references/ui/wuxia-rpg-equip-ui.md) |
+| `item-ui` | [wuxia-rpg-item-ui.md](./references/ui/wuxia-rpg-item-ui.md) |
+| `mastery-ui` | [wuxia-rpg-mastery-ui.md](./references/ui/wuxia-rpg-mastery-ui.md) |
+| `character-ui` | [wuxia-rpg-character-ui.md](./references/ui/wuxia-rpg-character-ui.md) |
+| `bag-ui` | [wuxia-rpg-bag-ui.md](./references/ui/wuxia-rpg-bag-ui.md) |
+| `travel-ui` | [wuxia-rpg-travel-ui.md](./references/ui/wuxia-rpg-travel-ui.md) |
+| `inn-ui` | [wuxia-rpg-inn-ui.md](./references/ui/wuxia-rpg-inn-ui.md) |
+| `wuxue-list-ui` | [wuxia-rpg-wuxue-list-ui.md](./references/ui/wuxia-rpg-wuxue-list-ui.md) |
+| `trade-buy-ui` | [wuxia-rpg-trade-buy-ui.md](./references/ui/wuxia-rpg-trade-buy-ui.md) |
+| `trade-sell-ui` | [wuxia-rpg-trade-sell-ui.md](./references/ui/wuxia-rpg-trade-sell-ui.md) |
+| `message-ui` | [wuxia-rpg-message-ui.md](./references/ui/wuxia-rpg-message-ui.md) |
+| `map-ui` | [wuxia-rpg-map-ui.md](./references/ui/wuxia-rpg-map-ui.md) |
+| `clue-ui` | [wuxia-rpg-clue-ui.md](./references/ui/wuxia-rpg-clue-ui.md) |
 
 严格按返回的 `界面` 值路由，不自行改用其他界面。
 
@@ -160,7 +160,7 @@ echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts
 
 全部界面均由 engine 把完整正文拼入顶层 `渲染文本`（模板内置，无需 GM 拼接）：
 
-- 成功返回时**严格原样输出 `渲染文本`**：不改写、不润色、不增删、不按结构化字段重新拼接，包括空字符串。
+- 成功返回时**严格原样输出 `渲染文本`**：不改写、不润色、不增删、不按结构化字段重新拼接，包括空字符串——空串属正常现象，直接输出，禁止据此排查引擎或读取引擎脚本。
 - 返回 `错误` 时不得透传界面：go 错误按提示修正 action 后重调，judge 错误修正后重调 judge。
 
 各界面文档只保留交互与指令路由规则：玩家在本界面输入后，按文档组装后续 action；界面跳转仍以返回的 `界面` 值为准。

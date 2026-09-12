@@ -5,7 +5,7 @@ description: 角色、武学、状态、阵营与物品的数据字段定义
 
 # 数据字段说明
 
-基线数据位于 `assets/data/`，但 GM 只经 `wuxia_query` 等查询工具（不可用时回退 engine 查询命令）读取、经 engine 写入，禁止直接读写 JSON。具体查询见 [dao-query.md](./wuxia-rpg-dao-query.md)。
+基线数据位于 `assets/data/`，但 GM 只经 `wuxia_query` 等查询工具（不可用时回退 engine 查询命令）读取、经 engine 写入，禁止直接读写 JSON。具体查询见 [wuxia-rpg-dao-query.md](./wuxia-rpg-dao-query.md)。
 
 ## 角色
 
@@ -65,7 +65,7 @@ description: 角色、武学、状态、阵营与物品的数据字段定义
 | 识破类型 | 独立/全体/自对抗/无；带特效但缺省时视为独立 |
 | 自身特效 / 队友特效 | 对自己或我方全体施加的状态 |
 | 心法效果 | 运转心法时施加的长效状态；空时以小周天占位 |
-| 等级增益 | Lv1～10的 `{等级,效果}`；折算见 [formulas.md](./wuxia-rpg-formulas.md) |
+| 等级增益 | Lv1～10的 `{等级,效果}`；折算见 [wuxia-rpg-formulas.md](./wuxia-rpg-formulas.md) |
 
 心法不可主动施展，不占主动武学携带位；通过 `运转心法`生效。空 `心法效果`自动施加小周天，每回合结束回复5%气血与内力上限。
 

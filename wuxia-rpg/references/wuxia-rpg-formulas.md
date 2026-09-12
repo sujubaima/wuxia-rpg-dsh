@@ -33,7 +33,7 @@ description: 武侠RPG战斗判定流程与伤害计算公式（闪避、暴击�
 
 ## 识破判定
 
-仅技能附带特效时触发，按特效 `识破类型`（见 [data-schema.md](./wuxia-rpg-data-schema.md)）结算：
+仅技能附带特效时触发，按特效 `识破类型`（见 [wuxia-rpg-data-schema.md](./wuxia-rpg-data-schema.md)）结算：
 
 ```
 特效发动率 = clamp(75% + (攻击方识破 − 对抗值) × 0.8%, 0%, 100%)

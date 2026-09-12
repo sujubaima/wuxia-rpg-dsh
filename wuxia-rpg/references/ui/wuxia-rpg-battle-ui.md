@@ -30,4 +30,4 @@ engine 已将规范三层战报与玩家行动面板拼入顶层 `渲染文本`�
 - 我方败/认输：依据敌方立场、动机和关系度处理未逃走的我方角色；逃走者不得处决。
 - 平局：双方存活，不处决、不发经验。
 - 终局界面输出后完成战后 judge，一次性提交合理后果与 `战斗-结束`，返回 `exploration-ui`；败方和平局不发经验。
-- 我方胜或敌方认输按 [battle-end-ui.md](./wuxia-rpg-battle-end-ui.md)处理。
+- 我方胜或敌方认输按 [wuxia-rpg-battle-end-ui.md](./wuxia-rpg-battle-end-ui.md)处理。
