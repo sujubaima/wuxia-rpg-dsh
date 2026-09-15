@@ -13,6 +13,16 @@
 > [!WARNING]
 > 当前项目仍处于初期阶段，代码实现、游戏机制与数值设计均有待持续打磨。后续版本不排除引入不兼容修改，当前版本仅供体验。
 
+## 运行预览
+
+自带WebUI套件
+![WebUI Explore](./.img/webui_explore.jpg "自带WebUI套件探索")
+![WebUI Combat](./.img/webui_combat.jpg "自带WebUI套件战斗")
+
+DSH插件（可交互卡片）
+![DSH Explore](./.img/dsh_explore.jpg "DSH插件探索")
+![DSH Combat](./.img/dsh_combat.jpg "DSH插件战斗")
+
 ## 项目组成
 
 ```text
