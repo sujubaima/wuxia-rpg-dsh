@@ -75,7 +75,7 @@ root, stage = map(Path, sys.argv[1:])
 
 COMMON_IGNORES = {
     "__pycache__", ".DS_Store", "node_modules", ".git",
-    ".sessions.json", "save",
+    ".sessions.json", "save", "plans",
 }
 
 def ignore(directory, names):
@@ -128,16 +128,16 @@ missing = [str(path.relative_to(root)) for path in need if not path.is_file()]
 if missing:
     raise SystemExit("错误：发布包缺少 " + ", ".join(missing))
 
-generated_names = {".sessions.json", "__pycache__", "node_modules"}
-generated = []
+excluded_names = {".sessions.json", "__pycache__", "node_modules", "plans"}
+excluded = []
 for path in root.rglob("*"):
     relative = path.relative_to(root)
-    if any(part in generated_names for part in relative.parts):
-        generated.append(str(relative))
+    if any(part in excluded_names for part in relative.parts):
+        excluded.append(str(relative))
     elif path.is_file() and path.name.endswith((".pyc", ".tsbuildinfo")):
-        generated.append(str(relative))
-if generated:
-    raise SystemExit("错误：发布包仍含运行或生成文件\n  " + "\n  ".join(generated))
+        excluded.append(str(relative))
+if excluded:
+    raise SystemExit("错误：发布包仍含运行、生成或内部计划文件\n  " + "\n  ".join(excluded))
 
 forbidden = (
     str(source_root),

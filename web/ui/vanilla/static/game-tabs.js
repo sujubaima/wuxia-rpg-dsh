@@ -551,6 +551,7 @@ async function loadClue(){
         wrap.appendChild(nd);
       }
     }
+    det.appendChild(wrap);
     c.appendChild(det);
   }
 }
