@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """JSON 权威状态、缓存与交换文件读取策略回归。"""
 
+import json
 import os
 import subprocess
 import sys
@@ -77,6 +78,68 @@ class AuthoritativeJsonPolicyTest(unittest.TestCase):
                 sm.restore(5, save.name, directory, data_dir=str(Path(directory) / "baseline"))
             self.assertEqual(marker.read_text(encoding="utf-8"), '{"名称":"保留"}')
             self.assertEqual(explore.read_text(encoding="utf-8"), '{"体力":70}')
+
+    def test_save_includes_world_facts_and_quest_state_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            facts = {"version": 1, "definitions": {}, "records": {
+                "world.weather@world": {"value": "rain", "status": "verified"},
+            }}
+            quests = {"version": 1, "definitions": {
+                "rain-case": {"quest_id": "rain-case"},
+            }, "runtimes": {"rain-case": {"lifecycle": "active"}}}
+            sm.write_world_facts(6, facts, directory)
+            sm.write_quest_state(6, quests, directory)
+            with patch.object(sm, "auto_diff", return_value={}):
+                path = sm.save({"当前位置": "苏州", "体力": 100}, 6, directory)
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["world_facts"], facts)
+            self.assertEqual(payload["quest_state"], quests)
+
+    def test_restore_preserves_world_facts_and_quest_state_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            slot = Path(directory) / "slot_6"
+            (slot / ".data" / "characters").mkdir(parents=True)
+            facts = {"version": 1, "definitions": {"world.weather@world": {
+                "fact_key": "world.weather@world", "value_type": "string",
+            }}, "records": {"world.weather@world": {
+                "fact_key": "world.weather@world", "value": "rain", "status": "verified",
+            }}}
+            quests = {"version": 1, "definitions": {"rain-case": {"quest_id": "rain-case"}},
+                      "runtimes": {"rain-case": {"lifecycle": "active"}},
+                      "legacy_imported": True}
+            save = slot / "savefile_20260101_010101.json"
+            save.write_text(json.dumps({
+                "state": {"人物状态": {}, "当前位置": "苏州", "当前时间": 0,
+                          "体力": 100, "任务摘要及进度": []},
+                "world_facts": facts, "quest_state": quests,
+            }, ensure_ascii=False), encoding="utf-8")
+            (slot / "world_facts.json").write_text("{}", encoding="utf-8")
+            (slot / "quest_state.json").write_text("{}", encoding="utf-8")
+            try:
+                sm.restore(6, save.name, directory, data_dir=str(Path(directory) / "baseline"))
+                self.assertEqual(sm.read_world_facts(6, directory), facts)
+                self.assertEqual(sm.read_quest_state(6, directory), quests)
+            finally:
+                dq.set_data_dir(sm.DEFAULT_DATA_DIR)
+
+    def test_old_snapshot_clears_aux_state_for_legacy_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            slot = Path(directory) / "slot_7"
+            (slot / ".data" / "characters").mkdir(parents=True)
+            save = slot / "savefile_20260101_010101.json"
+            save.write_text(json.dumps({
+                "state": {"人物状态": {}, "当前位置": "苏州", "当前时间": 0,
+                          "体力": 100, "任务摘要及进度": [{"名称": "旧线索"}]},
+            }, ensure_ascii=False), encoding="utf-8")
+            (slot / "world_facts.json").write_text('{"records":{"stale":{}}}', encoding="utf-8")
+            (slot / "quest_state.json").write_text('{"definitions":{"stale":{}}}', encoding="utf-8")
+            try:
+                state = sm.restore(7, save.name, directory, data_dir=str(Path(directory) / "baseline"))
+                self.assertEqual(sm.read_world_facts(7, directory), {})
+                self.assertEqual(sm.read_quest_state(7, directory), {})
+                self.assertEqual(state["任务摘要及进度"][0]["名称"], "旧线索")
+            finally:
+                dq.set_data_dir(sm.DEFAULT_DATA_DIR)
 
     def test_corrupt_dao_index_falls_back_but_record_is_strict(self):
         with tempfile.TemporaryDirectory() as directory:

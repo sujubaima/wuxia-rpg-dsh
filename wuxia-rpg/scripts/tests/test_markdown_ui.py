@@ -94,7 +94,7 @@ class ExplorationUiTest(unittest.TestCase):
             ],
             "场景要素": [
                 {"主体": "大雄宝殿内", "描写": "香烟缭绕"},
-                {"主体": "香客", "描写": "", "特殊指令": [{"名称": "交谈观察", "可用": True}]},
+                {"主体": "香客", "描写": ""},
             ],
             "相邻出口": [{"方位": "北", "邻场景": "少林客堂"}, {"方位": "南", "邻场景": "少林寺山门"}],
             "体力": 82, "金钱": 1530,
@@ -904,7 +904,7 @@ class EngineIntegrationTest(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def _start_battle(self):
+    def _create_ready_slot(self):
         title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir)
         slot = title["next_slot"]
         created = run_engine(slot, {"行为": [{"类型": "创建角色", "角色": CHAR}]}, "go", self.save_dir)
@@ -917,6 +917,10 @@ class EngineIntegrationTest(unittest.TestCase):
                  "特殊指令": [{"名称": "远行（舟车）", "可用": True}]},
             ]}, "judge", self.save_dir)
         self.assertFalse(opening.get("错误"))
+        return slot
+
+    def _start_battle(self):
+        slot = self._create_ready_slot()
         # 隔离用例中增强主控，确保开战自动推进稳定停在玩家回合，不受随机先手影响。
         char_path = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters", "散人", "沈孤鸿.json")
         with open(char_path, "r", encoding="utf-8") as file:
@@ -971,21 +975,64 @@ class EngineIntegrationTest(unittest.TestCase):
     def test_judge_battle_trigger_attaches_markdown(self):
         # 战斗-触发后槽位进入 AWAITING_BATTLE_START，会污染共享槽位的回合状态，
         # 故另建独立 slot 验证（不与其它用例共状态）。
-        title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir)
-        slot = title["next_slot"]
-        created = run_engine(slot, {"行为": [{"类型": "创建角色", "角色": CHAR}]}, "go", self.save_dir)
-        self.assertFalse(created.get("错误"))
-        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, "go", self.save_dir)
+        slot = self._create_ready_slot()
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, "go", self.save_dir)
         bt = run_engine(slot, {
-            "行为": [{"类型": "战斗-触发", "我方": ["沈孤鸿"], "敌方": ["山贼甲"], "允许逃跑": True}],
+            "行为": [{"类型": "战斗-触发", "我方": ["沈孤鸿"], "敌方": ["路不平"], "允许逃跑": True}],
             "当前剧情": "夜色中刀光乍现。"}, "judge", self.save_dir)
         self.assertEqual(bt.get("界面"), "exploration-battle-ui")
+        self.assertEqual(bt.get("turn_state"), "AWAITING_BATTLE_START")
         text = bt.get("渲染文本")
         self.assertTrue(text)
         self.assertIn("战局双方", text)
         self.assertIn("我方：沈孤鸿", text)
         self.assertIn("操控方式", text)
         self.assertIn("- 玩家角色：仅操控 沈孤鸿", text)
+
+    def test_battle_trigger_rejects_unpersisted_participants_and_rolls_back(self):
+        slot = self._create_ready_slot()
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, "go", self.save_dir)
+        explore_path = os.path.join(self.save_dir, f"slot_{slot}", "explore.json")
+        with open(explore_path, "r", encoding="utf-8") as file:
+            stamina_before = json.load(file)["体力"]
+
+        rejected = run_engine(slot, {
+            "行为": [
+                {"类型": "体力", "操作": "加", "值": -7},
+                {"类型": "战斗-触发", "我方": ["沈孤鸿"],
+                 "敌方": ["山贼甲", "山贼乙"], "允许逃跑": True},
+            ],
+            "当前剧情": "山贼自暗处现身。"}, "judge", self.save_dir)
+
+        self.assertTrue(rejected.get("错误"))
+        self.assertIn("山贼甲", rejected["错误"])
+        self.assertIn("山贼乙", rejected["错误"])
+        self.assertNotEqual(rejected.get("界面"), "exploration-battle-ui")
+        self.assertNotIn("渲染文本", rejected)
+        self.assertEqual(rejected.get("turn_state"), "AWAITING_JUDGE")
+        with open(explore_path, "r", encoding="utf-8") as file:
+            self.assertEqual(json.load(file)["体力"], stamina_before)
+
+    def test_battle_trigger_accepts_character_staged_in_same_judge(self):
+        slot = self._create_ready_slot()
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, "go", self.save_dir)
+        enemy = {**CHAR, "名称": "山贼甲", "阵营": "江湖"}
+        triggered = run_engine(slot, {
+            "行为": [
+                {"类型": "写角色", "角色": enemy},
+                {"类型": "战斗-触发", "我方": ["沈孤鸿"],
+                 "敌方": ["山贼甲"], "允许逃跑": True},
+            ],
+            "当前剧情": "山贼甲拔刀拦路。"}, "judge", self.save_dir)
+
+        self.assertFalse(triggered.get("错误"), triggered)
+        self.assertEqual(triggered.get("界面"), "exploration-battle-ui")
+        self.assertEqual(triggered.get("turn_state"), "AWAITING_BATTLE_START")
+        character_root = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters")
+        self.assertTrue(any(
+            "山贼甲.json" in files
+            for _, _, files in os.walk(character_root)
+        ))
 
     def test_battle_start_and_advance_attach_engine_report(self):
         slot, started = self._start_battle()
@@ -1023,21 +1070,54 @@ class EngineIntegrationTest(unittest.TestCase):
         self.assertIn("路不平", ended["渲染文本"])
 
     def test_gm_error_not_rendered_for_player(self):
-        run_engine(self.slot, {"行为": [{"类型": "交谈观察"}]}, "go", self.save_dir)
+        run_engine(self.slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, "go", self.save_dir)
         err = run_engine(self.slot, {"行为": [], "当前剧情": "路过。",
                                      "场景要素": "非法"}, "judge", self.save_dir)
         self.assertEqual(err.get("界面"), "exploration-ui")
         self.assertTrue(err.get("错误"))
         self.assertNotIn("渲染文本", err)
+        overlong = run_engine(self.slot, {"行为": [], "当前剧情": "夜色渐沉。",
+                                         "场景要素": [
+                                             {"主体": "海风", "描写": "风" * 31},
+                                         ]}, "judge", self.save_dir)
+        self.assertEqual(overlong.get("界面"), "exploration-ui")
+        self.assertIn("场景要素【海风】", overlong.get("错误", ""))
+        self.assertIn("不得超过30字（当前31字）", overlong.get("错误", ""))
+        self.assertNotIn("渲染文本", overlong)
+        nonfunctional_command = run_engine(self.slot, {
+            "行为": [], "当前剧情": "夜色渐沉。",
+            "场景要素": [
+                {"主体": "海风", "描写": "掠过院墙",
+                 "特殊指令": [{"名称": "搜查翻找", "可用": True}]},
+                {"主体": "驿丞", "描写": "案后整理文书",
+                 "特殊指令": [{"名称": "远行（舟车）", "可用": True}]},
+            ]}, "judge", self.save_dir)
+        self.assertIn("场景要素【海风】不是当前场景绑定的功能NPC", nonfunctional_command.get("错误", ""))
+        self.assertNotIn("渲染文本", nonfunctional_command)
+        extra_command = run_engine(self.slot, {
+            "行为": [], "当前剧情": "夜色渐沉。",
+            "场景要素": [
+                {"主体": "海风", "描写": "掠过院墙"},
+                {"主体": "驿丞", "描写": "案后整理文书",
+                 "特殊指令": [
+                     {"名称": "远行（舟车）", "可用": True},
+                     {"名称": "交谈观察", "可用": True},
+                 ]},
+            ]}, "judge", self.save_dir)
+        self.assertIn("特殊指令须严格为", extra_command.get("错误", ""))
+        self.assertIn("不允许 ['交谈观察']", extra_command.get("错误", ""))
+        self.assertNotIn("渲染文本", extra_command)
         # 修正后重调正常挂载（落点为驿站功能场景，要素须含功能NPC+特殊指令）
-        # 主体用「驿丞何九」验证前缀匹配放宽
+        # 主体用「驿丞何九」验证前缀匹配放宽，海风描写验证30字边界
+        boundary_description = "风" * 30
         ok = run_engine(self.slot, {"行为": [], "当前剧情": "夜色渐沉。",
                                     "场景要素": [
-                                        {"主体": "海风", "描写": "咸腥扑面"},
+                                        {"主体": "海风", "描写": boundary_description},
                                         {"主体": "驿丞何九", "描写": "案后整理文书",
                                          "特殊指令": [{"名称": "远行（舟车）", "可用": True}]},
                                     ]}, "judge", self.save_dir)
         self.assertIn("渲染文本", ok)
+        self.assertEqual(ok["场景要素"][0]["描写"], boundary_description)
 
     def test_dsh_mode_empty_text_structured_intact(self):
         back = run_engine(self.slot, {"行为": [{"类型": "返回游戏"}]}, "go", self.save_dir, mode="dsh")
@@ -1071,11 +1151,11 @@ class EngineIntegrationTest(unittest.TestCase):
         title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir)
         self.assertEqual(title.get("界面"), "title-ui")
         self.assertEqual(title.get("标题状态"), "主页")
-        self.assertEqual(title.get("版本"), "0.9.8")
+        self.assertEqual(title.get("版本"), "0.9.10")
         self.assertIn("渲染文本", title)
         dsh_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="dsh")
         self.assertEqual(dsh_title.get("渲染文本"), "")
-        self.assertEqual(dsh_title.get("版本"), "0.9.8")
+        self.assertEqual(dsh_title.get("版本"), "0.9.10")
         web_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="WEB_UI")
         self.assertTrue(web_title.get("渲染文本"))
         self.assertIn("存档列表", web_title)

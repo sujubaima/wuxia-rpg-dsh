@@ -3,7 +3,7 @@
 """engine go/judge 端到端基本功能测试。
 
 隔离运行：WUXIA_RPG_SAVE_DIR 指向临时目录，不污染真实存档。
-覆盖十类基本功能：建档 / 门厅哨兵 / go-judge 两步式 / judge 回滚 /
+覆盖基本功能：建档 / 门厅哨兵 / go-judge 两步式 / 任务草稿 / judge 回滚 /
 judge 顶层校验 / 场景登记校验 / 查询类带界面 / 战斗流程 / 判定 CLI / 数据查询 CLI。
 用法：python3 scripts/tests/e2e_runner.py（退出码 0=全过）
 """
@@ -22,6 +22,7 @@ ENGINE = os.path.join(SCRIPTS, "engine.py")
 from common import dao as dq
 from store import save_manager as sm
 from store import turn_state
+from store import quest_drafts
 
 FAILED = []
 
@@ -67,6 +68,29 @@ def char(name, faction="江湖"):
     }
 
 
+def quest_blueprint(quest_id="e2e-ledger", fact="item:e2e_ledger.authenticity@world"):
+    return fact, {
+        "任务ID": quest_id, "版本": 1, "名称": "回归账册",
+        "引子": "一册账册来历可疑。", "隐藏目标": "查清账册真伪",
+        "事实定义": [
+            {"事实键": fact, "值类型": "enum", "可选值": ["authentic", "forged"]},
+        ],
+        "起始节点": ["heard"],
+        "节点": [
+            {"节点ID": "heard", "完成条件": {}, "完成摘要": "得到账册线索。",
+             "后继节点": ["authentic", "forged"]},
+            {"节点ID": "authentic", "前置节点": ["heard"],
+             "完成条件": {"fact": fact, "eq": "authentic"},
+             "完成摘要": "确认账册为真。", "终局": "解决",
+             "奖励": {"奖励ID": f"{quest_id}:reward", "描述": "体力+5",
+                     "状态变更": [{"类型": "体力", "操作": "加", "值": 5}]}},
+            {"节点ID": "forged", "前置节点": ["heard"],
+             "完成条件": {"fact": fact, "eq": "forged"},
+             "完成摘要": "确认账册为伪。", "终局": "关闭"},
+        ],
+    }
+
+
 def _has_item(slot, name, save_dir, expected=True):
     """校验玩家背包是否含某物品。expected=True 期望含、False 期望不含。"""
     player = (sm.read_meta(slot, save_dir) or {}).get("角色名")
@@ -82,12 +106,21 @@ def _has_item(slot, name, save_dir, expected=True):
     return (name in bag) == expected
 
 
+def _read_char(slot, name, save_dir):
+    return dq.read_character_file(name, data_dir=sm.slot_data_dir(slot, save_dir)) or {}
+
+
+def _item_count(character, name):
+    return sum(1 for item in (character.get("物品") or [])
+               if item == name or (isinstance(item, dict) and item.get("名称") == name))
+
+
 def _copper(slot, save_dir):
     """取玩家铜钱。"""
     player = (sm.read_meta(slot, save_dir) or {}).get("角色名")
     if not player:
         return 0
-    ch = dq.read_character_file(player, data_dir=sm.slot_data_dir(slot, save_dir))
+    ch = _read_char(slot, player, save_dir)
     return int(ch.get("铜钱", ch.get("银两", 0)) or 0) if ch else 0
 
 
@@ -121,7 +154,7 @@ def main():
               r.get("turn_state") == turn_state.AWAITING_JUDGE
               and turn_state.read_state(slot, tmp)["origin"] == "创建角色",
               f"r={json.dumps(r, ensure_ascii=False)[:200]}")
-        blocked = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        blocked = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         check("开场 judge 前拒绝新 go", blocked.get("状态冲突") == "go_already_committed",
               f"blocked={json.dumps(blocked, ensure_ascii=False)[:200]}")
         opening = run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿初入江湖。"}, cmd="judge", save_dir=tmp)
@@ -143,10 +176,18 @@ def main():
 
         # -------- 样例3：go/judge 两步式（赠送落盘） --------
         print("== 样例3 go/judge 两步式 ==")
-        g = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        before_missing_target = sm.read_explore(slot, tmp) or {}
+        missing_target = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        after_missing_target = sm.read_explore(slot, tmp) or {}
+        check("交谈观察缺少目标时拒绝且不结算",
+              "须传入 目标" in str(missing_target.get("提示", ""))
+              and before_missing_target == after_missing_target
+              and missing_target.get("turn_state") == turn_state.READY,
+              f"missing_target={json.dumps(missing_target, ensure_ascii=False)[:250]}")
+        g = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         check("go 交谈观察无界面（需调 judge）", "界面" not in g, f"g={list(g.keys())}")
         check("go 后进入待 judge", g.get("turn_state") == turn_state.AWAITING_JUDGE, f"g={g}")
-        duplicate = run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        duplicate = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         check("重复 go 被阶段门禁拒绝", duplicate.get("状态冲突") == "go_already_committed",
               f"duplicate={json.dumps(duplicate, ensure_ascii=False)[:200]}")
         readonly = run_engine(slot, {"行为": [{"类型": "角色信息", "角色": "沈孤鸿"}]}, save_dir=tmp)
@@ -169,9 +210,72 @@ def main():
         check("重复 judge 被阶段门禁拒绝", duplicate_judge.get("状态冲突") == "judge_not_expected",
               f"duplicate_judge={json.dumps(duplicate_judge, ensure_ascii=False)[:200]}")
 
+        before_search = sm.read_explore(slot, tmp) or {}
+        search = run_engine(slot, {"行为": [
+            {"类型": "搜查翻找", "目标": "旧书柜"},
+        ]}, save_dir=tmp)
+        after_search = sm.read_explore(slot, tmp) or {}
+        check("搜查翻找扣2体力2刻且进入待裁定", search.get("错误") is None
+              and "界面" not in search
+              and search.get("turn_state") == turn_state.AWAITING_JUDGE
+              and after_search.get("体力") == int(before_search.get("体力", 0) or 0) - 2
+              and after_search.get("当前时间") == int(before_search.get("当前时间", 0) or 0) + 2,
+              f"before={before_search.get('当前时间'), before_search.get('体力')} "
+              f"after={after_search.get('当前时间'), after_search.get('体力')} search={search}")
+        search_judge = run_engine(slot, {
+            "行为": [], "当前剧情": "沈孤鸿翻检旧书柜，没有放过任何夹层。",
+        }, cmd="judge", save_dir=tmp)
+        check("搜查翻找后 judge 恢复 READY",
+              search_judge.get("错误") is None
+              and search_judge.get("turn_state") == turn_state.READY,
+              f"search_judge={json.dumps(search_judge, ensure_ascii=False)[:200]}")
+
+        # -------- 样例3b：批量任务 prepare → judge 采用 --------
+        print("== 样例3b 批量任务草稿采用 ==")
+        g = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
+        fact, quest = quest_blueprint()
+        second_fact, second_quest = quest_blueprint(
+            "e2e-letter", "item:e2e_letter.authenticity@world"
+        )
+        prepared = run_engine(slot, {"任务": [
+            {"操作": "创建", "蓝图": quest},
+            {"操作": "创建", "蓝图": second_quest},
+        ]}, cmd="quest-prepare", save_dir=tmp)
+        prepared_ids = [row.get("任务ID") for row in (prepared.get("任务") or [])]
+        check("quest-prepare 返回同轮任务批次", prepared.get("ok") is True
+              and prepared.get("turn_state") == turn_state.AWAITING_JUDGE
+              and prepared_ids == ["e2e-ledger", "e2e-letter"],
+              f"prepared={json.dumps(prepared, ensure_ascii=False)[:300]}")
+        failed_adoption = run_engine(slot, {"行为": [
+            {"类型": "线索-采用草稿", "任务ID列表": list(reversed(prepared_ids))},
+            {"类型": "不存在类型", "值": 1},
+        ], "当前剧情": "本次裁定应整体失败。"}, cmd="judge", save_dir=tmp)
+        failed_quests = sm.read_quest_state(slot, tmp).get("definitions", {})
+        check("judge 失败保留任务草稿供重试", failed_adoption.get("错误") is not None
+              and os.path.exists(quest_drafts.quest_drafts_path(slot, tmp))
+              and "e2e-ledger" not in failed_quests and "e2e-letter" not in failed_quests,
+              f"failed={json.dumps(failed_adoption, ensure_ascii=False)[:300]}")
+        stamina_before = int((sm.read_explore(slot, tmp) or {}).get("体力", 0) or 0)
+        adopted = run_engine(slot, {"行为": [
+            {"类型": "线索-采用草稿", "任务ID列表": prepared_ids},
+            {"类型": "事实", "事实": fact, "值": "authentic"},
+            {"类型": "事实", "事实": second_fact, "值": "authentic"},
+        ], "当前剧情": "沈孤鸿查明账册与密信皆为真本。"}, cmd="judge", save_dir=tmp)
+        quest_state = sm.read_quest_state(slot, tmp)
+        world_facts = sm.read_world_facts(slot, tmp)
+        check("judge 原子采用多个任务并归约事实奖励", adopted.get("错误") is None
+              and quest_state.get("runtimes", {}).get("e2e-ledger", {}).get("lifecycle") == "resolved"
+              and quest_state.get("runtimes", {}).get("e2e-letter", {}).get("lifecycle") == "resolved"
+              and world_facts.get("records", {}).get(fact, {}).get("value") == "authentic"
+              and world_facts.get("records", {}).get(second_fact, {}).get("value") == "authentic"
+              and int((sm.read_explore(slot, tmp) or {}).get("体力", 0) or 0) == min(100, stamina_before + 10),
+              f"adopted={json.dumps(adopted, ensure_ascii=False)[:350]}")
+        check("judge 成功后清理本轮任务草稿",
+              not os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)))
+
         # -------- 样例4：judge 回滚 --------
         print("== 样例4 judge 回滚 ==")
-        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         copper_before = _copper(slot, tmp)
         j = run_engine(slot, {"行为": [
             {"类型": "铜钱", "操作": "加", "角色": "沈孤鸿", "值": 100},
@@ -196,15 +300,127 @@ def main():
         skilled_npc["武学"] = [{"名称": "百缠手", "等级": 1}]
         j = run_engine(slot, {"行为": [
             {"类型": "写角色", "角色": skilled_npc},
+            {"类型": "不存在类型", "值": 1},
         ], "当前剧情": "有艺客出现在路旁。"}, cmd="judge", save_dir=tmp)
-        check("judge 接受武学非空的角色", j.get("错误") is None,
+        check("写角色后续变化失败时整轮报错", j.get("错误") is not None,
+              f"错误={j.get('错误')}")
+        check("写角色后续变化失败时新角色不落盘",
+              dq.read_character_file("有艺客", data_dir=sm.slot_data_dir(slot, tmp)) is None)
+
+        j = run_engine(slot, {"行为": [
+            {"类型": "写角色", "角色": skilled_npc},
+            {"类型": "剧情事件", "事件": "路遇有艺客", "数据": {"地点": "路旁"}},
+        ], "当前剧情": "有艺客出现在路旁。"}, cmd="judge", save_dir=tmp)
+        check("judge 接受武学非空角色与剧情事件", j.get("错误") is None,
               f"错误={j.get('错误')}")
         check("武学非空的角色正常落盘",
               dq.read_character_file("有艺客", data_dir=sm.slot_data_dir(slot, tmp)) is not None)
 
+        # -------- 样例4c：复合 go 行为 --------
+        print("== 样例4c 复合 go 行为 ==")
+        before = sm.read_explore(slot, tmp) or {}
+        rest = run_engine(slot, {"行为": [{"类型": "休息", "等级": "露宿",
+                                            "时长": 8, "免费": True}]}, save_dir=tmp)
+        after = sm.read_explore(slot, tmp) or {}
+        check("休息经 go 结算时间与体力", rest.get("错误") is None
+              and after.get("当前时间") == int(before.get("当前时间", 0) or 0) + 8
+              and after.get("体力") == min(100, int(before.get("体力", 0) or 0) + 10),
+              f"before={before.get('当前时间'), before.get('体力')} after={after.get('当前时间'), after.get('体力')}")
+        j = run_engine(slot, {"行为": [
+            {"类型": "抵达", "位置": "回归行旅区·起点"},
+            {"类型": "登记场景", "区域": "回归行旅区", "场景": "起点", "方位出口": {"东": "终点"}},
+            {"类型": "物品", "操作": "增", "角色": "沈孤鸿", "名": "小还丹", "数量": 2},
+            {"类型": "气血", "操作": "设", "角色": "沈孤鸿", "值": 1},
+        ], "当前剧情": "沈孤鸿歇息后抵达行旅起点。"}, cmd="judge", save_dir=tmp)
+        check("休息后 judge 建立行旅测试状态", j.get("错误") is None,
+              f"j={json.dumps(j, ensure_ascii=False)[:250]}")
+
+        before = sm.read_explore(slot, tmp) or {}
+        travel = run_engine(slot, {"行为": [{"类型": "远行（徒步）", "目的地": "终点"}]}, save_dir=tmp)
+        after = sm.read_explore(slot, tmp) or {}
+        check("徒步远行经 mutation 结算", travel.get("错误") is None
+              and after.get("当前位置") == "回归行旅区·终点"
+              and after.get("当前时间") == int(before.get("当前时间", 0) or 0) + 4
+              and after.get("体力") == int(before.get("体力", 0) or 0) - 5,
+              f"travel={json.dumps(travel, ensure_ascii=False)[:200]}, after={after}")
+        run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿徒步抵达终点。"}, cmd="judge", save_dir=tmp)
+
+        player_before = _read_char(slot, "沈孤鸿", tmp)
+        state_before = sm.read_explore(slot, tmp) or {}
+        used = run_engine(slot, {"行为": [{"类型": "使用物品", "物品": "小还丹",
+                                            "目标": "沈孤鸿"}]}, save_dir=tmp)
+        player_after = _read_char(slot, "沈孤鸿", tmp)
+        state_after = sm.read_explore(slot, tmp) or {}
+        check("使用物品结算成本、效果与消耗", used.get("错误") is None
+              and _item_count(player_after, "小还丹") == _item_count(player_before, "小还丹") - 1
+              and int(player_after.get("气血", 0) or 0) > 1
+              and state_after.get("当前时间") == int(state_before.get("当前时间", 0) or 0) + 1
+              and state_after.get("体力") == int(state_before.get("体力", 0) or 0) - 1,
+              f"used={json.dumps(used, ensure_ascii=False)[:300]}, "
+              f"items={_item_count(player_before, '小还丹')}→{_item_count(player_after, '小还丹')}, "
+              f"hp={player_before.get('气血')}→{player_after.get('气血')}, "
+              f"state={state_before.get('当前时间'), state_before.get('体力')}→"
+              f"{state_after.get('当前时间'), state_after.get('体力')}")
+        run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿服下小还丹。"}, cmd="judge", save_dir=tmp)
+
+        giver_before = _item_count(_read_char(slot, "沈孤鸿", tmp), "小还丹")
+        receiver_before = _item_count(_read_char(slot, "有艺客", tmp), "小还丹")
+        gifted = run_engine(slot, {"行为": [{"类型": "赠与物品", "物品": "小还丹",
+                                              "受赠者": "有艺客", "数量": 1}]}, save_dir=tmp)
+        giver_after = _item_count(_read_char(slot, "沈孤鸿", tmp), "小还丹")
+        receiver_after = _item_count(_read_char(slot, "有艺客", tmp), "小还丹")
+        check("赠与经 mutation 转移物品", gifted.get("错误") is None
+              and giver_after == giver_before - 1
+              and receiver_after == receiver_before + 1,
+              f"gifted={json.dumps(gifted, ensure_ascii=False)[:300]}, "
+              f"player={giver_before}→{giver_after}, npc={receiver_before}→{receiver_after}")
+        run_engine(slot, {"行为": [], "当前剧情": "有艺客收下丹药。"}, cmd="judge", save_dir=tmp)
+
+        copper_before = _copper(slot, tmp)
+        bought = run_engine(slot, {"行为": [{"类型": "购买", "卖家": "有艺客",
+                                              "物品": "玉佩", "数量": 1, "价格": 1,
+                                              "商人": False}]}, save_dir=tmp)
+        check("个人购买经 mutation 同步资产", bought.get("错误") is None
+              and _has_item(slot, "玉佩", tmp)
+              and _copper(slot, tmp) == copper_before - 1,
+              f"bought={json.dumps(bought, ensure_ascii=False)[:200]}")
+        run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿买下玉佩。"}, cmd="judge", save_dir=tmp)
+
+        copper_before = _copper(slot, tmp)
+        sold = run_engine(slot, {"行为": [{"类型": "出售", "买家": "有艺客",
+                                            "物品": "玉佩", "数量": 1, "价格": 1,
+                                            "商人": False}]}, save_dir=tmp)
+        check("个人出售经 mutation 同步资产", sold.get("错误") is None
+              and _has_item(slot, "玉佩", tmp, expected=False)
+              and _copper(slot, tmp) == copper_before + 1,
+              f"sold={json.dumps(sold, ensure_ascii=False)[:200]}")
+        if sold.get("turn_state") == turn_state.AWAITING_JUDGE:
+            run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿将玉佩售回。"}, cmd="judge", save_dir=tmp)
+
+        player_before = _read_char(slot, "沈孤鸿", tmp)
+        explore_before = sm.read_explore(slot, tmp) or {}
+        cache_before = sm.read_merchant_cache(slot, tmp)
+        failed_trade = run_engine(slot, {"行为": [
+            {"类型": "出售", "买家": "测试商人", "物品": "小还丹", "数量": 1,
+             "价格": 1, "商人": True},
+            {"类型": "赠与物品", "物品": "并不存在的物品", "受赠者": "有艺客", "数量": 1},
+        ]}, save_dir=tmp)
+        player_after = _read_char(slot, "沈孤鸿", tmp)
+        explore_after = sm.read_explore(slot, tmp) or {}
+        cache_after = sm.read_merchant_cache(slot, tmp)
+        check("后续 action 失败时商人交易整批回滚", failed_trade.get("提示") is not None
+              and player_after == player_before
+              and explore_after == explore_before
+              and cache_after == cache_before,
+              f"failed_trade={json.dumps(failed_trade, ensure_ascii=False)[:500]}, "
+              f"player_equal={player_after == player_before}, "
+              f"explore_equal={explore_after == explore_before}, cache_equal={cache_after == cache_before}, "
+              f"items={_item_count(player_before, '小还丹')}→{_item_count(player_after, '小还丹')}, "
+              f"copper={player_before.get('铜钱')}→{player_after.get('铜钱')}")
+
         # -------- 样例5：judge 顶层校验 --------
         print("== 样例5 judge 顶层校验 ==")
-        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         j = run_engine(slot, {"行为": [], "当前剧情": "x", "非法字段": 1}, cmd="judge", save_dir=tmp)
         check("judge 拒绝非预期顶层字段", j.get("错误") is not None and "非预期字段" in str(j.get("错误", "")),
               f"错误={j.get('错误')}")
@@ -236,7 +452,15 @@ def main():
               f"overlay={overlay}")
 
         print("== 样例6b 读档重置阶段 ==")
-        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
+        _restore_fact, restore_quest = quest_blueprint(
+            "restore-draft", "item:restore_ledger.authenticity@world")
+        restore_prepared = run_engine(slot, {
+            "任务": [{"操作": "创建", "蓝图": restore_quest}],
+        }, cmd="quest-prepare", save_dir=tmp)
+        check("读档前可建立待裁定任务草稿", restore_prepared.get("ok") is True
+              and os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)),
+              f"prepared={json.dumps(restore_prepared, ensure_ascii=False)[:250]}")
         saves = sm.list_saves(slot, tmp)
         target = saves[-1][0] if saves else None
         loaded = run_engine(slot, {"行为": [{"类型": "加载存档", "目标": target}]}, save_dir=tmp)
@@ -244,6 +468,8 @@ def main():
               f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
         check("读档后阶段重置 READY", loaded.get("turn_state") == turn_state.READY,
               f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
+        check("读档后清理任务草稿",
+              not os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)))
 
         # -------- 样例7：查询类带界面 --------
         print("== 样例7 查询类带界面 ==")
@@ -254,6 +480,10 @@ def main():
 
         # -------- 样例8：战斗流程 --------
         print("== 样例8 战斗流程 ==")
+        # 前序物品测试曾主动压低气血；战斗流程夹具先恢复主控，避免状态伤害使首个休息动作直接败阵。
+        player = _read_char(slot, "沈孤鸿", tmp)
+        player["气血"] = max(1, int(player.get("气血上限", 0) or 999999))
+        dq.update_char("沈孤鸿", player, data_dir=sm.slot_data_dir(slot, tmp))
         # 敌人用基线已有角色（避免重名校验）；攻击 go → 战斗-触发 → 战斗-开始
         enemy = "路不平"
         rnd0 = sm.read_round(slot, tmp)
@@ -284,7 +514,7 @@ def main():
         # 非终局战斗轮保留 go → judge 战斗-推进
         step = run_engine(slot, {"行为": [{"类型": "战斗-休息"}]}, save_dir=tmp)
         check("战斗操控 go 进入待 judge", step.get("turn_state") == turn_state.AWAITING_JUDGE,
-              f"step={json.dumps(step, ensure_ascii=False)[:200]}")
+              f"step={json.dumps(step, ensure_ascii=False)[:1200]}")
         advanced = run_engine(slot, {"行为": [{"类型": "战斗-推进", "回合详情": step.get("回合详情") or []}],
                                      "当前剧情": ""}, cmd="judge", save_dir=tmp)
         check("战斗-推进返回战斗界面并回到 READY",
@@ -318,7 +548,7 @@ def main():
         blocked_random = run_engine(slot, {"基础成功率": 15}, cmd="random-event", save_dir=tmp)
         check("READY 状态拒绝 random-event", blocked_random.get("状态冲突") == "random_event_not_expected",
               f"blocked_random={blocked_random}")
-        run_engine(slot, {"行为": [{"类型": "交谈观察"}]}, save_dir=tmp)
+        run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         c = run_engine(slot, {"基础成功率": 15}, cmd="random-event", save_dir=tmp)
         check("engine random-event 返回结果", c.get("结果") in ("触发", "未触发"), f"c={c}")
         check("engine random-event 带提示", "提示" in c, f"c={c}")
@@ -346,6 +576,27 @@ def main():
                                 "武学偏好": "枪法"}, cmd="recommend", save_dir=tmp)
         check("查询参数错误仍返回 JSON", bad.get("_rc") == 2 and "错误" in bad,
               f"bad={json.dumps(bad, ensure_ascii=False)[:200]}")
+
+        # -------- 样例11：全部行动受阻的空数组占位 --------
+        print("== 样例11 空行动数组占位 ==")
+        before_no_action = sm.read_explore(slot, tmp) or {}
+        no_action = run_engine(slot, {"行为": []}, save_dir=tmp)
+        after_no_action = sm.read_explore(slot, tmp) or {}
+        check("空行动数组零成本进入待裁定",
+              no_action.get("错误") is None
+              and "界面" not in no_action
+              and no_action.get("turn_state") == turn_state.AWAITING_JUDGE
+              and no_action.get("结算") == []
+              and "GM线索提示" not in no_action
+              and before_no_action == after_no_action,
+              f"no_action={json.dumps(no_action, ensure_ascii=False)[:300]}")
+        no_action_judge = run_engine(slot, {
+            "行为": [], "当前剧情": "牢门紧锁，沈孤鸿此刻无法离开。",
+        }, cmd="judge", save_dir=tmp)
+        check("空行动数组后 judge 恢复 READY",
+              no_action_judge.get("错误") is None
+              and no_action_judge.get("turn_state") == turn_state.READY,
+              f"no_action_judge={json.dumps(no_action_judge, ensure_ascii=False)[:250]}")
 
     print()
     if FAILED:

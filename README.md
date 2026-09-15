@@ -8,7 +8,7 @@
 | DSH 插件 | 在 DeepSeek Harness（DSH）会话中使用武侠卡片、面板与战斗 UI | `wuxia-rpg/`、`dsh-plugin/`、`install.sh` |
 | 自带 Web 套件 | 使用独立 Web UI，通过 agent-lite 连接模型 API 驱动 GM | `wuxia-rpg/`、`web/`、`agent/`、`config.json` |
 
-当前 Skill 版本：`0.9.8`。
+当前 Skill 版本：`0.9.10`。
 
 > [!WARNING]
 > 当前项目仍处于初期阶段，代码实现、游戏机制与数值设计均有待持续打磨。后续版本不排除引入不兼容修改，当前版本仅供体验。
@@ -31,7 +31,7 @@ DSH插件（可交互卡片）
 │   ├── SKILL.md
 │   ├── references/         # GM 规则、数据结构、战斗规则与 Markdown UI
 │   ├── assets/data/        # 角色、武学、物品、状态、阵营与地图基线数据
-│   └── scripts/            # go / judge / check / query 等引擎入口
+│   └── scripts/            # go / judge / check / quest-prepare / query 等引擎入口
 ├── web/                    # 标准库 HTTP/SSE 服务与原生、React Web UI
 ├── agent/                  # 纯 Python 标准库的 agent-lite 底座
 ├── dsh-plugin/             # DSH Host 工具、隐藏命令与 Client UI
@@ -208,7 +208,7 @@ cc-game-dsh/
 | `llm.api_token` | `AGENT_API_TOKEN` | Bearer Token；服务不要求鉴权时可留空 |
 | `llm.model` | `AGENT_MODEL` | 模型名称 |
 
-Web 的 agent-lite 只注册 `use_skill`、八个 `wuxia_*` 工具和受限的 `wuxia_read_reference`，不提供通用 `read/write/bash/list`。`claude` 后端仍受 Claude Code 自身权限模式约束。
+Web 的 agent-lite 只注册 `use_skill`、九个 `wuxia_*` 工具和受限的 `wuxia_read_reference`，不提供通用 `read/write/bash/list`。`claude` 后端仍受 Claude Code 自身权限模式约束。
 
 ### 3. 启动
 

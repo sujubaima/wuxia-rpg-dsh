@@ -21,6 +21,7 @@ EXPECTED = {
     "wuxia_judge": "judge",
     "wuxia_check": "check",
     "wuxia_random_event": "random-event",
+    "wuxia_quest_prepare": "quest-prepare",
     "wuxia_query": "query",
     "wuxia_setting": "setting",
     "wuxia_recommend": "recommend",
@@ -48,6 +49,7 @@ def fake_engine(calls):
         judge=judge,
         check=record("check"),
         random_event=record("random-event"),
+        quest_prepare=record("quest-prepare"),
         query=record("query"),
         setting=record("setting"),
         recommend=record("recommend"),
@@ -60,11 +62,18 @@ class ToolsManifestContractTest(unittest.TestCase):
         manifest = load_tools_manifest()
         declared = {tool["name"]: tool["operation"] for tool in manifest["tools"]}
         self.assertEqual(declared, EXPECTED)
-        self.assertEqual(manifest["protocol_version"], "1.0")
+        self.assertEqual(manifest["protocol_version"], "1.2")
 
     def test_gateway_implements_every_declared_operation(self):
         gateway = EngineGateway(engine_module=fake_engine([]))
         self.assertEqual(set(gateway.operations), set(EXPECTED.values()))
+
+    def test_go_schema_allows_empty_action_placeholder(self):
+        manifest = load_tools_manifest()
+        tool = next(item for item in manifest["tools"] if item["name"] == "wuxia_go")
+        actions = tool["input_schema"]["properties"]["行为"]
+        self.assertNotIn("minItems", actions)
+        self.assertIn("空数组", actions["description"])
 
 
 class EngineGatewayTest(unittest.TestCase):
@@ -79,6 +88,7 @@ class EngineGatewayTest(unittest.TestCase):
             "judge": {"槽位": 1, "行为": [], "当前剧情": "测试"},
             "check": {"槽位": 1},
             "random-event": {"槽位": 1},
+            "quest-prepare": {"槽位": 1, "任务": [{"操作": "创建", "蓝图": {}}]},
             "query": {"槽位": 0, "类型": "角色"},
             "setting": {"槽位": 0, "目标": "武当派"},
             "recommend": {"槽位": 0, "一级属性": {}, "武学偏好": "剑法"},
@@ -107,6 +117,20 @@ class EngineGatewayTest(unittest.TestCase):
             self.gateway.invoke("go", {"槽位": 1})
         with self.assertRaisesRegex(GatewayProtocolError, "行为（数组）"):
             self.gateway.invoke("judge", {"槽位": 1, "行为": {}})
+
+    def test_quest_prepare_requires_batch_items_and_positive_slot(self):
+        with self.assertRaisesRegex(GatewayProtocolError, "正整数"):
+            self.gateway.invoke("quest-prepare", {"槽位": 0, "任务": []})
+        with self.assertRaisesRegex(GatewayProtocolError, "非空数组"):
+            self.gateway.invoke("quest-prepare", {"槽位": 1})
+        with self.assertRaisesRegex(GatewayProtocolError, "第 1 项须为对象"):
+            self.gateway.invoke("quest-prepare", {"槽位": 1, "任务": ["bad"]})
+        with self.assertRaisesRegex(GatewayProtocolError, "操作须为"):
+            self.gateway.invoke("quest-prepare", {"槽位": 1, "任务": [{}]})
+        with self.assertRaisesRegex(GatewayProtocolError, "蓝图（对象）"):
+            self.gateway.invoke("quest-prepare", {
+                "槽位": 1, "任务": [{"操作": "创建"}],
+            })
 
     def test_preserves_json_read_error_code(self):
         def broken_query(_payload):

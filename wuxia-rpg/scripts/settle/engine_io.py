@@ -80,14 +80,49 @@ def _set_slot(slot):
     dq.set_slot(slot)
 
 def _read_char(slot, name):
-    # 事务态优先取暂存区（深拷贝，避免 apply 改动污染暂存），否则绕过缓存读盘取全新 dict
+    # 事务态优先取本轮新建/更新暂存区（深拷贝，避免 apply 改动污染暂存），否则读盘。
+    if est._NEW_CHAR_STAGED is not None and name in est._NEW_CHAR_STAGED:
+        return copy.deepcopy(est._NEW_CHAR_STAGED[name])
     if est._TXN is not None and name in est._TXN:
         return copy.deepcopy(est._TXN[name])
     return dq.read_character_file(name)
 
+
 def _write_char(slot, name, char):
-    # 仅暂存到事务区，待 settle 全部变更校验通过后由 commit 阶段统一刷盘（dq.update_char）。
-    est._TXN[name] = char
+    # 新建角色后续更新仍写回新建暂存区；已有角色写普通更新区。
+    if est._NEW_CHAR_STAGED is not None and name in est._NEW_CHAR_STAGED:
+        est._NEW_CHAR_STAGED[name] = copy.deepcopy(char)
+        return
+    if est._TXN is None:
+        raise RuntimeError("角色写入必须处于 SettlementSession")
+    est._TXN[name] = copy.deepcopy(char)
+
+
+def _stage_new_char(slot, name, char):
+    """校验角色名后暂存新角色，commit 前不创建角色文件。"""
+    if est._NEW_CHAR_STAGED is None:
+        raise RuntimeError("写角色必须处于 SettlementSession")
+    if name in est._NEW_CHAR_STAGED or dq.read_character_file(name) is not None:
+        raise ValueError(f"角色名【{name}】已存在，角色名必须全局唯一")
+    est._NEW_CHAR_STAGED[name] = copy.deepcopy(char)
+
+
+def _read_merchant_cache(slot):
+    """读取 settlement 内商人缓存工作副本。"""
+    if est._SESSION is None:
+        return sm.read_merchant_cache(slot)
+    if est._MERCHANT_STAGED is None:
+        est._MERCHANT_STAGED = copy.deepcopy(sm.read_merchant_cache(slot))
+    return copy.deepcopy(est._MERCHANT_STAGED)
+
+
+def _write_merchant_cache(slot, data):
+    """暂存 merchant.json，成功 commit 时才落盘。"""
+    if est._SESSION is None:
+        sm.write_merchant_cache(slot, data)
+        return
+    est._MERCHANT_STAGED = copy.deepcopy(data)
+    est._MERCHANT_DIRTY = True
 
 def _party_status_row(slot, name):
     """取单个在队角色的状态行：名称/气血/内力/上限。

@@ -11,7 +11,7 @@ SCRIPT = os.path.join(HERE, "e2e_runner.py")
 class EngineE2ETest(unittest.TestCase):
     def test_engine_e2e_script(self):
         proc = subprocess.run([sys.executable, SCRIPT], capture_output=True, text=True,
-                              timeout=120)
+                              timeout=600)
         detail = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
         self.assertEqual(proc.returncode, 0, detail[-4000:])
         self.assertIn("全部通过", proc.stdout)

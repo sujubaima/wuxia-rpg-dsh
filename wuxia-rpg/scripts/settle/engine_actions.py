@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from collections import deque
+from collections import Counter, deque
 """engine actions 层(由 engine.py 拆分)。"""
+import copy
 import os, sys
 import json
 from world import character_ops as co
 from common import dao as dq
+from common.json_io import JsonReadError
 from world import mastery as ms
 from store import save_manager as sm
 from store import battle_runtime as br
+from store import quest_drafts as qd
 from combat import battle as bt
 from common import status_manager as sm_status
 from world import scene as sc
@@ -18,16 +21,30 @@ from settle import engine_state as est
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-from settle.engine_io import _build_state, _clear_battle_tmp, _derive_caps, _ensure_data_dir, _load_map, _read_char, _resolve_party, _resolve_region, _write_char
+from settle.engine_io import (_build_state, _clear_battle_tmp, _derive_caps, _ensure_data_dir,
+                              _load_map, _read_char, _read_merchant_cache, _resolve_party,
+                              _resolve_region, _stage_new_char, _write_char)
 from store.battle_last import read_battle_last as _read_battle_last, write_battle_last as _write_battle_last
-from settle.engine_fields import _FIELD_HANDLERS, _apply_mastery, _carry_item_op, _carry_skill_op, _chg_carry_item, _chg_carry_skill, _chg_equip, _chg_party, _chg_xinfa
+from settle.domain_events import (BATTLE_ENDED, CHARACTER_CREATED, COPPER_CHANGED,
+                                  DEATH_CHANGED, EQUIPMENT_CHANGED, FACT_CHANGED,
+                                  HP_CHANGED, ITEM_CHANGED, LOADOUT_CHANGED,
+                                  LOCATION_CHANGED, MP_CHANGED, NARRATIVE_EVENT,
+                                  PARTY_CHANGED, QUEST_CREATED, QUEST_DISCOVERED,
+                                  QUEST_EXTENDED, RELATION_CHANGED, SKILL_CHANGED,
+                                  STAMINA_CHANGED, TIME_ADVANCED)
+from settle.quest_engine import create_quest, discover_quest, extend_quest
+from settle.world_facts import upsert_fact
+from settle.engine_fields import (_FIELD_HANDLERS, _apply_mastery, _carry_item_op,
+                                  _carry_skill_op, _chg_carry_item, _chg_carry_skill,
+                                  _chg_equip, _chg_party, _chg_xinfa)
+from settle.mutation_executor import MutationExecutor
 from settle.engine_ui import _REST_TIERS, _STATION_PRICE, _build_inn, _character_detail, _norm_elements, merchant_buy, merchant_sell
 from settle.title_flow import build_character, handle_title_action
 
 # 行为类型 → (体力消耗, 时间消耗(刻))；休息/远行（徒步/舟车）/战斗 特殊处理，不在此表
-_ACTION_STAMINA = {"攻击": 1, "使用物品": 1, "购买": 2, "出售": 2, "遣散": 1, "其他行为": 4, "交谈观察": 1, "赠与物品": 1}
+_ACTION_STAMINA = {"攻击": 1, "使用物品": 1, "购买": 2, "出售": 2, "遣散": 1, "其他行为": 4, "交谈观察": 1, "搜查翻找": 2, "赠与物品": 1}
 
-_ACTION_TIME = {"攻击": 1, "使用物品": 1, "购买": 2, "出售": 2, "遣散": 1, "其他行为": 2, "交谈观察": 1, "赠与物品": 1}
+_ACTION_TIME = {"攻击": 1, "使用物品": 1, "购买": 2, "出售": 2, "遣散": 1, "其他行为": 2, "交谈观察": 1, "搜查翻找": 2, "赠与物品": 1}
 
 # 战斗整场耗时耗力：体力 20、时间 8 刻，战斗结束时 GM 在 judge 战后处置带
 # {类型:战斗-结束} 条目，由 _apply_changes 自动结算（GM 不必手传体力/时间条目）
@@ -83,7 +100,7 @@ def _apply_arrive(slot, explore, c):
     explore["当前位置"] = dest
     return {"ok": True, "msg": f"抵达 {dest}", "变更": f"抵达 {dest}"}
 
-def _act_rest(slot, explore, action):
+def _settle_rest(slot, explore, action):
     """休息（合并原休息+投宿）：按 等级(露宿/简朴/中等/奢华) + 时长(刻) + 免费(bool,必传) 结算。
     免费=False 且缺等级/时长 → inn-ui（展示简朴/中等/奢华，不消耗）；
     免费=True 且缺等级/时长 → 报错（免费休息须传齐等级+时长）；
@@ -156,22 +173,30 @@ def _act_rest(slot, explore, action):
                     results.append({"ok": True, "msg": f"{name} {r['变更']}", "变更": f"{name} {r['变更']}"})
     return results
 
+
+def _act_rest(slot, explore, action):
+    mutation = dict(action)
+    mutation["类型"] = "休息结算"
+    return _execute_mutations([mutation])
+
+
+def _execute_mutations(mutations):
+    if est._SESSION is None:
+        return [{"ok": False, "msg": "玩家行为状态变更必须处于 SettlementSession"}]
+    return est._SESSION.apply_mutations(mutations)
+
+
 def _apply_action_cost(slot, explore, action):
-    """通用行为类体力/时间扣除：按 _ACTION_STAMINA/_ACTION_TIME 表扣。返回结果列表。
-    休息/远行/战斗 等特殊体力时间由各自 handler 处理，不走此函数。"""
+    """把通用行为成本转换为体力/时间 mutations 后统一结算。"""
     t = action.get("类型")
-    results = []
+    mutations = []
     cost = _ACTION_STAMINA.get(t, 0)
     if cost:
-        sr = _apply_stamina(slot, explore, {"操作": "加", "值": -cost})
-        if sr.get("ok"):
-            results.append(sr)
+        mutations.append({"类型": "体力", "操作": "加", "值": -cost})
     tcost = _ACTION_TIME.get(t, 0)
     if tcost:
-        tr = _advance_time(slot, explore, tcost)
-        if tr.get("ok"):
-            results.append(tr)
-    return results
+        mutations.append({"类型": "时间", "操作": "加", "值": tcost})
+    return _execute_mutations(mutations)
 
 def _walk_path(slot, region, start, goal):
     """区域内场景连通图 BFS 寻路：返回 start→goal 的场景名列表（含两端）。
@@ -206,7 +231,7 @@ def _walk_path(slot, region, start, goal):
     path.reverse()
     return path
 
-def _act_travel(slot, explore, action):
+def _settle_travel(slot, explore, action):
     """远行（徒步/舟车）：扣体力+推进时间+抵达目的地。
     远行（徒步）：区域内连通图 BFS 寻路，按路径边数扣体力/时间（1边=5体力4刻），抵达目的地。
     跨区域徒步报错（跨区走舟车经驿站）；不连通或已在目的地报错。
@@ -322,7 +347,15 @@ def _act_travel(slot, explore, action):
                         "GM参考": "玩家本次为主动移动（" + t + "）——应按随机事件规则掷骰判定旅途遭遇"})
     return results
 
-def _act_use_item(slot, explore, action):
+
+def _act_travel(slot, explore, action):
+    mutation = dict(action)
+    mutation["行为类型"] = action.get("类型")
+    mutation["类型"] = "远行结算"
+    return _execute_mutations([mutation])
+
+
+def _settle_use_item(slot, explore, action):
     """使用物品：据物品使用效果自动结算（扣物品+回气血/内力/体力/施加状态）。
     无 物品 参数 → 返回 bag-ui（按大世界可用筛选，不扣体力时间，纯浏览）；
     带 物品 → 行为类结算（扣1体力1刻）。适用场合校验：须大世界可用，否则 message-ui。"""
@@ -415,6 +448,15 @@ def _act_use_item(slot, explore, action):
     _write_char(slot, target, ch)
     return results
 
+
+def _act_use_item(slot, explore, action):
+    if not action.get("物品"):
+        return _settle_use_item(slot, explore, action)
+    results = _apply_action_cost(slot, explore, action)
+    mutation = {"类型": "使用物品", "物品": action.get("物品"), "目标": action.get("目标")}
+    return results + _execute_mutations([mutation])
+
+
 def _act_buy(slot, explore, action):
     """购买：向卖家买物品。行为类（扣2体力2刻）。
     无 卖家 → message-ui；有卖家无 物品 → trade-buy-ui（展示货架）；有卖家+物品 → 结算→exploration-ui。"""
@@ -431,8 +473,9 @@ def _act_buy(slot, explore, action):
     count = int(action.get("数量", 1) or 1)
     price = action.get("价格")
     results = _apply_action_cost(slot, explore, action)
-    r = merchant_buy(slot, buyer, seller, item, count=count, merchant=merchant, price=price)
-    return results + ([r] if isinstance(r, dict) else r)
+    mutation = {"类型": "交易-购买", "买家": buyer, "卖家": seller, "物品": item,
+                "数量": count, "商人": merchant, "价格": price}
+    return results + _execute_mutations([mutation])
 
 def _act_sell(slot, explore, action):
     """出售：向买家（收购NPC）售物品。行为类（扣2体力2刻）。
@@ -449,10 +492,11 @@ def _act_sell(slot, explore, action):
     count = int(action.get("数量", 1) or 1)
     price = action.get("价格")
     results = _apply_action_cost(slot, explore, action)
-    r = merchant_sell(slot, seller, buyer, item, count=count, merchant=merchant, price=price)
-    return results + ([r] if isinstance(r, dict) else r)
+    mutation = {"类型": "交易-出售", "卖家": seller, "买家": buyer, "物品": item,
+                "数量": count, "商人": merchant, "价格": price}
+    return results + _execute_mutations([mutation])
 
-def _act_gift(slot, explore, action):
+def _settle_gift(slot, explore, action):
     """赠与物品：将物品从「受赠者」与「赠送者物品栏」之间转物品。行为类（扣1体力1刻）。
     属于需 GM judge 的玩家主动行为：结束回世界界面判据是「GM 须下调 judge」。
     赠送者缺省主控；受赠者须已落盘（物品++ошибадение临时 NPC 未落盘拒收）。"""
@@ -480,7 +524,7 @@ def _act_gift(slot, explore, action):
     inv = g.get("物品")
     if not isinstance(inv, list) or inv.count(item) < count:
         return [{"ok": False, "msg": f"{giver} 物品栏【{item}】不足（持有{inv.count(item) if isinstance(inv,list) else 0}，需{count}）"}]
-    results = _apply_action_cost(slot, explore, action)
+    results = []
     # 扣赠送者栏
     for _ in range(count):
         if item in inv:
@@ -497,6 +541,14 @@ def _act_gift(slot, explore, action):
     results.append({"ok": True, "msg": f"{giver} 把 {item}×{count} 赠给 {target}",
                     "变更": f"{giver} 赠与 {target} {item}×{count}"})
     return results
+
+
+def _act_gift(slot, explore, action):
+    results = _apply_action_cost(slot, explore, action)
+    mutation = dict(action)
+    mutation["类型"] = "赠与结算"
+    return results + _execute_mutations([mutation])
+
 
 def _run_battle_func(slot, func, *args, **kw):
     """调用 battle.py 的函数（run_init/run_step），捕获其 stdout 的 JSON 输出并解析返回。
@@ -594,12 +646,35 @@ def _act_battle_surrender(slot, explore, action):
     """战斗-认输：调 battle.py run_step('认输')。"""
     return _act_battle_step(slot, explore, action, "认输")
 
+
+def _missing_battle_participants(slot, side_a, side_b):
+    """返回尚无角色记录的参战者，按双方名单顺序去重。"""
+    missing = []
+    seen = set()
+    for name in list(side_a) + list(side_b):
+        marker = (type(name).__name__, repr(name))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if not isinstance(name, str) or not name.strip() or _read_char(slot, name) is None:
+            missing.append(name if isinstance(name, str) and name.strip() else "（空姓名）")
+    return missing
+
+
 def _act_battle_trigger(slot, explore, action):
     """战斗-触发：战前参战确认/操控选择界面。不跑战斗，返回 exploration-battle-ui：
     当前场景状态(供渲染 exploration 上半部分) + 双方名单 + 操控方式选项。
     玩家选定操控方式后，GM 据选项拼成 战斗-开始 action（带 操控方式）再调 engine。"""
     side_a = action.get("我方") or []
     side_b = action.get("敌方") or []
+    if not isinstance(side_a, list) or not isinstance(side_b, list):
+        return [{"ok": False, "msg": "战斗-触发的 我方/敌方 须为角色姓名数组"}], None
+    missing = _missing_battle_participants(slot, side_a, side_b)
+    if missing:
+        return [{
+            "ok": False,
+            "msg": f"战斗-触发失败：参战角色未落盘：{'、'.join(missing)}；请先用 写角色 落盘",
+        }], None
     allow_escape = bool(action.get("允许逃跑", False))
     player_name = (sm.read_meta(slot) or {}).get("角色名")
     party = explore.get("队伍") if explore else None
@@ -698,7 +773,9 @@ def _act_dismiss(slot, explore, action):
     if not name:
         return [{"ok": False, "msg": "遣散须传入 角色"}]
     results = _apply_action_cost(slot, explore, action)
-    return results + [_chg_party(slot, {"类型": "在队", "操作": "离", "角色": name, "原因": "遣散"})]
+    return results + _execute_mutations([
+        {"类型": "在队", "操作": "离", "角色": name, "原因": "遣散"},
+    ])
 
 def _act_mastery(slot, explore, action):
     """武学精进。带 界面 直接渲染。
@@ -723,105 +800,485 @@ def _act_mastery(slot, explore, action):
     if lvl >= 10:
         return [{"ok": False, "msg": f"【{skill}】已达大成（第 10 境），无可精进"}]
     if action.get("操作") == "精进":
-        return [_apply_mastery(slot, {"类型": "武学", "操作": "精进", "角色": role, "名": skill})]
+        return _execute_mutations([
+            {"类型": "武学", "操作": "精进", "角色": role, "名": skill},
+        ])
     # 打开精进界面（查看该武学十境表）
     return [{"ok": True, "msg": "打开精进界面"}]
 
-def _apply_changes(slot, explore, changes):
-    """遍历执行 状态变更 数组（judge 行为数组中的一等条目）。由 judge 承担，交谈观察不再携带。
-    失败结果标记 _结算错误=True，供 judge 整体回滚判定。"""
+def _mutation_character_names(slot, mutation):
+    names = set()
+    for key in ("角色", "目标", "赠送者", "受赠者", "买家", "卖家"):
+        value = mutation.get(key)
+        if isinstance(value, str) and value:
+            names.add(value)
+        elif key == "角色" and isinstance(value, dict) and value.get("名称"):
+            names.add(value["名称"])
+    player = (sm.read_meta(slot) or {}).get("角色名")
+    kind = mutation.get("类型")
+    if player and kind in ("在队", "使用物品", "战斗-结束", "休息结算", "远行结算",
+                           "赠与结算", "交易-购买", "交易-出售"):
+        names.add(player)
+    if kind == "休息结算":
+        names.update(_resolve_party(slot))
+    return names
+
+
+def _mutation_snapshot(context, mutation):
+    chars = {}
+    for name in _mutation_character_names(context.slot, mutation):
+        chars[name] = copy.deepcopy(_read_char(context.slot, name))
+    return {"explore": copy.deepcopy(context.explore), "characters": chars}
+
+
+def _item_names(char):
+    out = []
+    for item in (char or {}).get("物品") or []:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, dict) and item.get("名称"):
+            out.append(item["名称"])
+    return out
+
+
+def _skill_levels(char):
+    levels = {}
+    for skill in (char or {}).get("武学") or []:
+        if isinstance(skill, str):
+            levels[skill] = 1
+        elif isinstance(skill, dict) and skill.get("名称"):
+            levels[skill["名称"]] = int(skill.get("等级", 1) or 1)
+    return levels
+
+
+def _project_mutation_events(context, mutation, before, after, results):
+    factory = context.event_factory
+    events = []
+    old_explore = (before or {}).get("explore") or {}
+    new_explore = (after or {}).get("explore") or {}
+
+    def changed(event_type, payload):
+        events.append(factory.create(event_type, payload))
+
+    old_stamina = int(old_explore.get("体力", 0) or 0)
+    new_stamina = int(new_explore.get("体力", 0) or 0)
+    if old_stamina != new_stamina:
+        changed(STAMINA_CHANGED, {"before": old_stamina, "after": new_stamina,
+                                  "delta": new_stamina - old_stamina})
+    old_time = int(old_explore.get("当前时间", 0) or 0)
+    new_time = int(new_explore.get("当前时间", 0) or 0)
+    if old_time != new_time:
+        changed(TIME_ADVANCED, {"before": old_time, "after": new_time,
+                                "delta": new_time - old_time})
+    old_pos = old_explore.get("当前位置")
+    new_pos = new_explore.get("当前位置")
+    if old_pos != new_pos:
+        changed(LOCATION_CHANGED, {"character": None, "before": old_pos, "after": new_pos})
+    old_npc_pos = old_explore.get("人物位置") if isinstance(old_explore.get("人物位置"), dict) else {}
+    new_npc_pos = new_explore.get("人物位置") if isinstance(new_explore.get("人物位置"), dict) else {}
+    for name in sorted(set(old_npc_pos) | set(new_npc_pos)):
+        if old_npc_pos.get(name) != new_npc_pos.get(name):
+            changed(LOCATION_CHANGED, {"character": name, "before": old_npc_pos.get(name),
+                                       "after": new_npc_pos.get(name)})
+
+    old_chars = (before or {}).get("characters") or {}
+    new_chars = (after or {}).get("characters") or {}
+    for name in sorted(set(old_chars) | set(new_chars)):
+        old = old_chars.get(name)
+        new = new_chars.get(name)
+        if old is None and new is not None:
+            changed(CHARACTER_CREATED, {"character": name})
+            continue
+        if old is None or new is None:
+            continue
+        for field, event_type in (("铜钱", COPPER_CHANGED), ("关系度", RELATION_CHANGED),
+                                  ("气血", HP_CHANGED), ("内力", MP_CHANGED)):
+            old_value = int(old.get(field, old.get("银两", 0) if field == "铜钱" else 0) or 0)
+            new_value = int(new.get(field, new.get("银两", 0) if field == "铜钱" else 0) or 0)
+            if old_value != new_value:
+                changed(event_type, {"character": name, "before": old_value, "after": new_value,
+                                     "delta": new_value - old_value})
+        if bool(old.get("在队")) != bool(new.get("在队")):
+            changed(PARTY_CHANGED, {"character": name, "before": bool(old.get("在队")),
+                                    "after": bool(new.get("在队"))})
+        if bool(old.get("死亡")) != bool(new.get("死亡")):
+            changed(DEATH_CHANGED, {"character": name, "before": bool(old.get("死亡")),
+                                    "after": bool(new.get("死亡"))})
+        old_items, new_items = Counter(_item_names(old)), Counter(_item_names(new))
+        for item in sorted(set(old_items) | set(new_items)):
+            delta = new_items[item] - old_items[item]
+            if delta:
+                changed(ITEM_CHANGED, {"character": name, "item": item,
+                                       "before": old_items[item], "after": new_items[item],
+                                       "delta": delta})
+        old_skills, new_skills = _skill_levels(old), _skill_levels(new)
+        for skill in sorted(set(old_skills) | set(new_skills)):
+            if old_skills.get(skill) != new_skills.get(skill):
+                changed(SKILL_CHANGED, {"character": name, "skill": skill,
+                                        "before": old_skills.get(skill),
+                                        "after": new_skills.get(skill)})
+        if old.get("装备") != new.get("装备"):
+            changed(EQUIPMENT_CHANGED, {"character": name, "before": old.get("装备") or {},
+                                        "after": new.get("装备") or {}})
+        loadout_fields = ("携带技能", "携带物品", "运转心法")
+        if any(old.get(field) != new.get(field) for field in loadout_fields):
+            changed(LOADOUT_CHANGED, {"character": name,
+                                      "before": {f: old.get(f) for f in loadout_fields},
+                                      "after": {f: new.get(f) for f in loadout_fields}})
+
+    if mutation.get("类型") == "战斗-结束":
+        changed(BATTLE_ENDED, {"stamina_cost": _BATTLE_STAMINA, "time_cost": _BATTLE_TIME})
+    if mutation.get("类型") == "剧情事件":
+        changed(NARRATIVE_EVENT, {"name": mutation.get("事件"), "data": mutation.get("数据") or {}})
+    return events
+
+
+def _apply_rest_mutation(context, mutation):
+    action = dict(mutation)
+    action["类型"] = "休息"
+    return _settle_rest(context.slot, context.explore, action)
+
+
+def _apply_travel_mutation(context, mutation):
+    action = dict(mutation)
+    action["类型"] = mutation.get("行为类型") or mutation.get("原类型") or "远行（徒步）"
+    return _settle_travel(context.slot, context.explore, action)
+
+
+def _apply_time_mutation(context, mutation):
+    delta = mutation.get("值")
+    if not isinstance(delta, int):
+        return {"ok": False, "msg": "时间变更须传入 值（整数刻数）"}
+    if delta == 0:
+        return {"ok": False, "msg": "时间变更目前传入0值，请GM重新斟酌更换成非0值或取消该变更"}
+    return _advance_time(context.slot, context.explore, delta)
+
+
+def _apply_battle_end_mutation(context, mutation):
+    return [
+        _apply_stamina(context.slot, context.explore, {"操作": "加", "值": -_BATTLE_STAMINA}),
+        _advance_time(context.slot, context.explore, _BATTLE_TIME),
+    ]
+
+
+def _apply_use_item_mutation(context, mutation):
+    item_name = mutation.get("物品") or mutation.get("名")
+    if not item_name:
+        return {"ok": False, "msg": "使用物品变更须传入 物品"}
+    return _settle_use_item(context.slot, context.explore,
+                            {"物品": item_name, "目标": mutation.get("目标"), "_judge_mode": True})
+
+
+def _apply_write_character_mutation(context, mutation):
+    rec = mutation.get("角色")
+    if not isinstance(rec, dict) or not rec.get("名称"):
+        return {"ok": False, "msg": "写角色变更须传入 角色（完整角色 dict，含名称）"}
+    name = rec["名称"]
+    wuxue = rec.get("武学")
+    has_wuxue = isinstance(wuxue, list) and any(
+        (isinstance(item, str) and item.strip())
+        or (isinstance(item, dict) and str(item.get("名称") or "").strip())
+        for item in wuxue
+    )
+    if not has_wuxue:
+        return {"ok": False, "msg": f"写角色失败：角色【{name}】的武学不能为空"}
+    try:
+        _stage_new_char(context.slot, name, rec)
+    except ValueError as exc:
+        return {"ok": False, "msg": f"写角色失败：{exc}"}
+    cur = context.explore.get("当前位置") or ""
+    if "·" in cur:
+        region = cur.split("·", 1)[0]
+        pos = context.explore.get("人物位置")
+        if not isinstance(pos, dict):
+            pos = {}
+        pos[name] = region
+        context.explore["人物位置"] = pos
+    return {"ok": True, "msg": f"落盘角色【{name}】", "变更": f"落盘角色 {name}"}
+
+
+def _apply_narrative_event_mutation(context, mutation):
+    name = mutation.get("事件")
+    data = mutation.get("数据", {})
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "msg": "剧情事件须传入非空 事件 名称"}
+    if not isinstance(data, dict):
+        return {"ok": False, "msg": "剧情事件 数据 须为对象"}
+    return {"ok": True, "msg": f"剧情事件【{name.strip()}】已记录", "变更": f"剧情事件 {name.strip()}"}
+
+
+def _apply_gift_mutation(context, mutation):
+    action = dict(mutation)
+    action["类型"] = "赠与物品"
+    return _settle_gift(context.slot, context.explore, action)
+
+
+def _apply_buy_mutation(context, mutation):
+    return merchant_buy(context.slot, mutation.get("买家"), mutation.get("卖家"),
+                        mutation.get("物品"), count=mutation.get("数量", 1),
+                        merchant=bool(mutation.get("商人")), price=mutation.get("价格"))
+
+
+def _apply_sell_mutation(context, mutation):
+    return merchant_sell(context.slot, mutation.get("卖家"), mutation.get("买家"),
+                         mutation.get("物品"), count=mutation.get("数量", 1),
+                         merchant=bool(mutation.get("商人")), price=mutation.get("价格"))
+
+
+def _apply_carry_item_operation(context, mutation):
+    return _carry_item_op(context.slot, mutation.get("角色"), mutation)
+
+
+def _apply_carry_skill_operation(context, mutation):
+    return _carry_skill_op(context.slot, mutation.get("角色"), mutation)
+
+
+def _fact_key(mutation):
+    return mutation.get("事实") or mutation.get("fact_key")
+
+
+def _fact_snapshot(context, mutation):
+    if context.session is None:
+        return None
+    return copy.deepcopy(context.session.world_facts.get("records", {}).get(_fact_key(mutation)))
+
+
+def _apply_fact_mutation(context, mutation, revision=False):
+    if context.session is None:
+        return {"ok": False, "msg": "事实变更必须处于 SettlementSession"}
+    key = _fact_key(mutation)
+    if not key:
+        return {"ok": False, "msg": "事实变更须传入 事实"}
+    if "值" not in mutation and "value" not in mutation:
+        return {"ok": False, "msg": f"事实【{key}】须传入 值"}
+    evidence = mutation.get("证据") if "证据" in mutation else mutation.get("evidence_ids")
+    if evidence is not None and not isinstance(evidence, list):
+        return {"ok": False, "msg": f"事实【{key}】证据须为数组"}
+    changed, before, after = upsert_fact(
+        context.session.world_facts,
+        key,
+        mutation.get("值") if "值" in mutation else mutation.get("value"),
+        status=mutation.get("状态") or mutation.get("status") or "verified",
+        source=mutation.get("来源") or mutation.get("source") or ("mechanical" if mutation.get("_内部") else "gm"),
+        evidence_ids=evidence,
+        definition=mutation.get("定义") or mutation.get("definition") or mutation.get("_定义"),
+        revision=revision,
+        reason=mutation.get("原因") or mutation.get("reason"),
+        updated_at=context.explore.get("当前时间"),
+    )
+    if changed:
+        context.session.mark_world_facts_dirty()
+    result = {
+        "ok": True,
+        "msg": f"事实【{key}】{'已修订' if revision else '已记录'}",
+        "变更": f"事实【{key}】={'%s' % after.get('value') if after else ''}",
+        "_fact_before": before,
+        "_fact_after": after,
+    }
+    # 世界事实是引擎内部状态；成功写入只驱动线索归约，不向玩家暴露事实键和值。
+    result["_静默"] = True
+    return result
+
+
+def _project_fact_event(context, mutation, before, after, results):
+    result = results[0] if results else {}
+    old = result.get("_fact_before")
+    new = result.get("_fact_after")
+    if old == new or new is None:
+        return []
+    return [context.event_factory.create(FACT_CHANGED, {
+        "fact_key": new.get("fact_key"), "before": old, "after": new,
+    })]
+
+
+def _apply_quest_create_mutation(context, mutation):
+    if context.session is None:
+        return {"ok": False, "msg": "线索创建必须处于 SettlementSession"}
+    raw = mutation.get("任务") or mutation.get("definition")
+    if raw is None:
+        return {"ok": False, "msg": "线索-创建须传入 任务 蓝图"}
+    hidden = bool(mutation.get("隐藏") or mutation.get("hidden"))
+    definition = create_quest(
+        context.session.world_facts, context.session.quest_state, raw, hidden=hidden,
+    )
+    runtime = context.session.quest_state["runtimes"][definition["quest_id"]]
+    if not hidden:
+        runtime["discovered_at"] = context.explore.get("当前时间")
+    context.session.mark_world_facts_dirty()
+    context.session.mark_quest_state_dirty()
+    return {
+        "ok": True,
+        "msg": f"线索【{definition['name']}】已创建",
+        "_quest_id": definition["quest_id"],
+        "_静默": True,
+    }
+
+
+def _apply_quest_discover_mutation(context, mutation):
+    if context.session is None:
+        return {"ok": False, "msg": "线索发现必须处于 SettlementSession"}
+    quest_id = mutation.get("任务ID") or mutation.get("quest_id")
+    changed, definition = discover_quest(context.session.quest_state, quest_id)
+    if changed:
+        context.session.quest_state["runtimes"][quest_id]["discovered_at"] = context.explore.get("当前时间")
+        context.session.mark_quest_state_dirty()
+    return {
+        "ok": True,
+        "msg": f"线索【{definition['name']}】已发现",
+        "_quest_id": quest_id,
+        "_quest_changed": changed,
+        "_静默": True,
+    }
+
+
+def _apply_quest_extend_mutation(context, mutation):
+    if context.session is None:
+        return {"ok": False, "msg": "线索扩展必须处于 SettlementSession"}
+    definition = extend_quest(context.session.world_facts, context.session.quest_state, mutation)
+    context.session.mark_world_facts_dirty()
+    context.session.mark_quest_state_dirty()
+    return {
+        "ok": True,
+        "msg": f"线索【{definition['name']}】蓝图已扩展",
+        "_quest_id": definition["quest_id"],
+        "_静默": True,
+    }
+
+
+def _apply_quest_draft_mutation(context, mutation):
+    if context.session is None:
+        return {"ok": False, "msg": "线索草稿采用必须处于 SettlementSession"}
+    extra = set(mutation) - {"类型", "任务ID列表"}
+    if extra:
+        raise ValueError(f"线索-采用草稿出现非预期字段：{'、'.join(sorted(extra))}")
+    quest_ids = mutation.get("任务ID列表")
+    try:
+        batch = qd.select_drafts(context.slot, quest_ids)
+    except JsonReadError as exc:
+        raise ValueError(
+            f"任务草稿读取失败，须重新 prepare（{exc.detail}）"
+        ) from exc
+    if batch["slot"] != context.slot:
+        raise ValueError("任务草稿不属于当前槽位")
+    current_round = sm.read_round(context.slot)
+    if batch["round"] != current_round:
+        raise ValueError(
+            f"任务草稿属于 round {batch['round']}，当前为 {current_round}，须重新 prepare"
+        )
+
     results = []
-    for c in changes:
-        if not isinstance(c, dict):
-            results.append({"ok": False, "msg": "非法状态变更条目", "_结算错误": True})
-            continue
-        kind = c.get("类型")
-        if kind == "武学":
-            r = _apply_mastery(slot, c)
-        elif kind == "体力" and explore:
-            r = _apply_stamina(slot, explore, c)
-        elif kind == "时间" and explore:
-            delta = c.get("值")
-            if not isinstance(delta, int):
-                r = {"ok": False, "msg": "时间变更须传入 值（整数刻数）"}
-            elif delta == 0:
-                r = {"ok": False, "msg": "时间变更目前传入0值，请GM重新斟酌更换成非0值或取消该变更"}
-            else:
-                r = _advance_time(slot, explore, delta)
-        elif kind == "战斗-结束" and explore:
-            # 战斗整场耗时耗力（体力-20/时间+8刻）：战后处置一条带过，GM 不必手传体力/时间条目
-            for r0 in (_apply_stamina(slot, explore, {"操作": "加", "值": -_BATTLE_STAMINA}),
-                       _advance_time(slot, explore, _BATTLE_TIME)):
-                if not r0.get("ok"):
-                    r0["_结算错误"] = True
-                results.append(r0)
-            continue
-        elif kind == "抵达" and explore:
-            r = _apply_arrive(slot, explore, c)
-        elif kind == "登记场景":
-            # 新场景随 judge 状态变更带入；写入本轮暂存区，commit 阶段落盘（支持整轮回滚）
-            r = sc.register_scene(slot, c, est._SCENE_STAGED, est._SCENE_TYPE_STAGED)
-        elif kind == "隔离地点":
-            # 将已登记地点重置为孤岛（清空出入口及反向边）；写入本轮暂存区，commit 阶段落盘
-            r = sc.isolate_scene(slot, c, est._SCENE_STAGED)
-        elif kind == "线索" and explore:
-            r = _apply_clue(slot, explore, c)
-        elif kind == "使用物品":
-            # 复用 go 使用物品 的效果结算（大世界可用校验、扣物品+回气血/内力/体力/施加状态），
-            # 但不扣体力时间——judge 状态变更不自动连动大世界时钟，是否补体力/G打量时间 GM 另行在状态变更中补。
-            item_name = c.get("物品") or c.get("名")
-            if not item_name:
-                results.append({"ok": False, "msg": "使用物品变更须传入 物品", "_结算错误": True})
-                continue
-            # 复用 go 私效果逻辑：调 _act_use_item 但显式跳过扣体力时间
-            for r0 in _act_use_item(slot, explore, {"物品": item_name, "目标": c.get("目标"), "_judge_mode": True}):
-                if not r0.get("ok"):
-                    r0["_结算错误"] = True
-                results.append(r0)
-            continue
-        elif kind == "写角色":
-            # GM 落盘自创临时 NPC：传角色完整 dict，write_character 入 slot .data
-            # （write_character 重名校验——与基线或本档已有角色同名即抛 ValueError，
-            #  非法则本轮 judge 整件回滚；GM 应先用 wuxia_query 查询避重名）
-            rec = c.get("角色")
-            if not isinstance(rec, dict) or not rec.get("名称"):
-                r = {"ok": False, "msg": "写角色变更须传入 角色（完整角色 dict，含名称）"}
-            else:
-                name = rec.get("名称")
-                wuxue = rec.get("武学")
-                has_wuxue = isinstance(wuxue, list) and any(
-                    (isinstance(item, str) and item.strip())
-                    or (isinstance(item, dict) and str(item.get("名称") or "").strip())
-                    for item in wuxue
+    for record in batch["records"]:
+        quest_id = record["quest_id"]
+        kind = record["kind"]
+        try:
+            if kind == "create":
+                hidden = record["hidden"]
+                definition = create_quest(
+                    context.session.world_facts,
+                    context.session.quest_state,
+                    copy.deepcopy(record["payload"]),
+                    hidden=hidden,
                 )
-                if not has_wuxue:
-                    r = {"ok": False, "msg": f"写角色失败：角色【{name}】的武学不能为空"}
-                else:
-                    try:
-                        dq.write_character(name, rec)
-                        cur = explore.get("当前位置") or ""
-                        if "·" in cur:
-                            region = cur.split("·", 1)[0]
-                            pos = explore.get("人物位置")
-                            if not isinstance(pos, dict):
-                                pos = {}
-                            pos[name] = region
-                            explore["人物位置"] = pos
-                        r = {"ok": True, "msg": f"落盘角色【{name}】", "变更": f"落盘角色 {name}"}
-                    except ValueError as e:
-                        r = {"ok": False, "msg": f"写角色失败：{e}"}
-            if not r.get("ok"):
-                r["_结算错误"] = True
-            results.append(r)
-            continue
-        elif kind in _FIELD_HANDLERS:
-            r = _FIELD_HANDLERS[kind](slot, c)
-        else:
-            r = {"ok": False, "msg": f"未知状态变更类型【{kind}】"}
-        if not r.get("ok"):
-            r["_结算错误"] = True
-        results.append(r)
+                runtime = context.session.quest_state["runtimes"][definition["quest_id"]]
+                if not hidden:
+                    runtime["discovered_at"] = context.explore.get("当前时间")
+                event_type = QUEST_CREATED
+            elif kind == "extend":
+                hidden = False
+                definition = extend_quest(
+                    context.session.world_facts,
+                    context.session.quest_state,
+                    copy.deepcopy(record["payload"]),
+                )
+                event_type = QUEST_EXTENDED
+            else:
+                raise ValueError(f"任务草稿【{quest_id}】类型无效")
+        except ValueError as exc:
+            raise ValueError(
+                f"任务草稿【{quest_id}】已过期，须重新 prepare（{exc}）"
+            ) from exc
+
+        actual_hash = qd.definition_hash(kind, definition, hidden)
+        if actual_hash != record["content_hash"]:
+            raise ValueError(f"任务草稿【{quest_id}】已过期，须重新 prepare")
+
+        results.append({
+            "ok": True,
+            "msg": (f"线索【{definition['name']}】已创建"
+                    if kind == "create" else f"线索【{definition['name']}】蓝图已扩展"),
+            "_quest_id": definition["quest_id"],
+            "_quest_event_type": event_type,
+            "_静默": True,
+        })
+
+    context.session.mark_world_facts_dirty()
+    context.session.mark_quest_state_dirty()
     return results
+
+
+def _project_quest_draft_event(context, mutation, before, after, results):
+    events = []
+    for result in results:
+        quest_id = result.get("_quest_id")
+        event_type = result.get("_quest_event_type")
+        if quest_id and event_type in (QUEST_CREATED, QUEST_EXTENDED):
+            events.append(context.event_factory.create(event_type, {"quest_id": quest_id}))
+    return events
+
+
+def _project_quest_event(event_type):
+    def project(context, mutation, before, after, results):
+        result = results[0] if results else {}
+        if event_type == QUEST_DISCOVERED and not result.get("_quest_changed"):
+            return []
+        quest_id = result.get("_quest_id")
+        return [context.event_factory.create(event_type, {"quest_id": quest_id})] if quest_id else []
+    return project
+
+
+def build_mutation_executor():
+    executor = MutationExecutor()
+    projector = _project_mutation_events
+    executor.register("休息结算", _apply_rest_mutation, _mutation_snapshot, projector)
+    executor.register("远行结算", _apply_travel_mutation, _mutation_snapshot, projector)
+    executor.register("武学", lambda ctx, c: _apply_mastery(ctx.slot, c), _mutation_snapshot, projector)
+    executor.register("体力", lambda ctx, c: _apply_stamina(ctx.slot, ctx.explore, c), _mutation_snapshot, projector)
+    executor.register("时间", _apply_time_mutation, _mutation_snapshot, projector)
+    executor.register("战斗-结束", _apply_battle_end_mutation, _mutation_snapshot, projector)
+    executor.register("抵达", lambda ctx, c: _apply_arrive(ctx.slot, ctx.explore, c), _mutation_snapshot, projector)
+    executor.register("登记场景", lambda ctx, c: sc.register_scene(ctx.slot, c, est._SCENE_STAGED,
+                                                                  est._SCENE_TYPE_STAGED))
+    executor.register("隔离地点", lambda ctx, c: sc.isolate_scene(ctx.slot, c, est._SCENE_STAGED))
+    executor.register("事实", _apply_fact_mutation, _fact_snapshot, _project_fact_event)
+    executor.register("事实-写入", _apply_fact_mutation, _fact_snapshot, _project_fact_event)
+    executor.register("事实-修订", lambda ctx, c: _apply_fact_mutation(ctx, c, revision=True),
+                      _fact_snapshot, _project_fact_event)
+    executor.register("线索-创建", _apply_quest_create_mutation, project=_project_quest_event(QUEST_CREATED))
+    executor.register("线索-发现", _apply_quest_discover_mutation,
+                      project=_project_quest_event(QUEST_DISCOVERED))
+    executor.register("线索-扩展", _apply_quest_extend_mutation,
+                      project=_project_quest_event(QUEST_EXTENDED))
+    executor.register("线索-采用草稿", _apply_quest_draft_mutation,
+                      project=_project_quest_draft_event)
+    executor.register("使用物品", _apply_use_item_mutation, _mutation_snapshot, projector)
+    executor.register("写角色", _apply_write_character_mutation, _mutation_snapshot, projector)
+    executor.register("剧情事件", _apply_narrative_event_mutation, _mutation_snapshot, projector)
+    executor.register("赠与结算", _apply_gift_mutation, _mutation_snapshot, projector)
+    executor.register("交易-购买", _apply_buy_mutation, _mutation_snapshot, projector)
+    executor.register("交易-出售", _apply_sell_mutation, _mutation_snapshot, projector)
+    executor.register("携带物品操作", _apply_carry_item_operation, _mutation_snapshot, projector)
+    executor.register("携带武学操作", _apply_carry_skill_operation, _mutation_snapshot, projector)
+    for kind, handler in _FIELD_HANDLERS.items():
+        executor.register(kind, lambda ctx, c, handler=handler: handler(ctx.slot, c),
+                          _mutation_snapshot, projector)
+    return executor
+
+
+def _apply_changes(slot, explore, changes):
+    """状态变更兼容入口；实际应用、事件投影和触发归约交给当前 SettlementSession。"""
+    if est._SESSION is None:
+        return [{"ok": False, "msg": "状态变更必须处于 SettlementSession", "_结算错误": True}]
+    return est._SESSION.apply_mutations(changes)
 
 def _act_config_equip(slot, explore, action):
     """配置装备：穿/脱。带 界面 直接渲染。无 操作/槽位 时视为打开界面（不修改）。"""
@@ -831,11 +1288,15 @@ def _act_config_equip(slot, explore, action):
         return [{"ok": True, "msg": "打开装备界面"}]
     role = action.get("角色") or (sm.read_meta(slot) or {}).get("角色名")
     if op == "脱":
-        return [_chg_equip(slot, {"类型": "装备", "操作": "脱", "角色": role, "槽位": slot_pos})]
+        return _execute_mutations([
+            {"类型": "装备", "操作": "脱", "角色": role, "槽位": slot_pos},
+        ])
     item = action.get("物品")
     if not item:
         return [{"ok": False, "msg": "穿装备须传入 物品"}]
-    return [_chg_equip(slot, {"类型": "装备", "操作": "穿", "角色": role, "槽位": slot_pos, "名": item})]
+    return _execute_mutations([
+        {"类型": "装备", "操作": "穿", "角色": role, "槽位": slot_pos, "名": item},
+    ])
 
 def _act_character(slot, explore, action):
     """角色信息：查看角色完整信息（属性派生含武学+装备反哺）。带 界面 直接渲染。
@@ -880,10 +1341,14 @@ def _act_config_item(slot, explore, action):
     带修改字段（操作 装/卸/换，或 携带物品 全量设）→ 执行并回写状态变更 → exploration-ui。"""
     role = action.get("角色") or (sm.read_meta(slot) or {}).get("角色名")
     if action.get("操作") in ("装", "卸", "换"):
-        return [_carry_item_op(slot, role, action)]
+        mutation = dict(action)
+        mutation.update({"类型": "携带物品操作", "角色": role})
+        return _execute_mutations([mutation])
     if "携带物品" in action:
         loadout = action.get("携带物品") or []
-        return [_chg_carry_item(slot, {"类型": "携带物品", "操作": "设", "角色": role, "名列表": loadout})]
+        return _execute_mutations([
+            {"类型": "携带物品", "操作": "设", "角色": role, "名列表": loadout},
+        ])
     return [{"ok": True, "msg": "打开道具界面"}]
 
 def _act_config_wuxue(slot, explore, action):
@@ -891,27 +1356,34 @@ def _act_config_wuxue(slot, explore, action):
     无修改字段时视为打开界面（不修改）→ wuxue-ui；
     带修改字段（操作 装/卸/换，或 携带技能 全量设，或 运转心法）→ 执行并回写状态变更 → exploration-ui。"""
     role = action.get("角色") or (sm.read_meta(slot) or {}).get("角色名")
-    results = []
+    mutations = []
     if action.get("操作") in ("装", "卸", "换"):
-        results.append(_carry_skill_op(slot, role, action))
+        mutation = dict(action)
+        mutation.update({"类型": "携带武学操作", "角色": role})
+        mutations.append(mutation)
     if "携带技能" in action:
-        results.append(_chg_carry_skill(slot, {"类型": "携带技能", "操作": "设", "角色": role,
-                                               "名列表": action.get("携带技能") or []}))
+        mutations.append({"类型": "携带技能", "操作": "设", "角色": role,
+                          "名列表": action.get("携带技能") or []})
     if "运转心法" in action:
         xinfa = action.get("运转心法")
-        results.append(_chg_xinfa(slot, {"类型": "运转心法", "操作": "设", "角色": role,
-                                         "名": xinfa if xinfa != "无" else None}))
-    return results or [{"ok": True, "msg": "打开武学界面"}]
+        mutations.append({"类型": "运转心法", "操作": "设", "角色": role,
+                          "名": xinfa if xinfa != "无" else None})
+    return _execute_mutations(mutations) if mutations else [{"ok": True, "msg": "打开武学界面"}]
 
 def _act_other(slot, explore, action):
     """其他行为：琐碎不推进剧情的通用行为。行为类，扣体力+推进时间，返回 exploration-ui。"""
     return _apply_action_cost(slot, explore, action)
 
 def _act_talk_observe(slot, explore, action):
-    """交谈观察：与 NPC 交谈/调查/观察场景等推进剧情的探索行为。
-    扣体力+推进时间（行为类）。剧情与数据后果统一由 GM 在 judge 一并落盘，
-    交谈观察本身不携带状态变更。
-    返回 exploration-ui（带更新后的时辰/体力/队伍状态），便于 GM 准确渲染。"""
+    """交谈观察：与指定目标交谈或观察，剧情及数据后果由 judge 承载。"""
+    target = action.get("目标")
+    if not isinstance(target, str) or not target.strip():
+        return [{"ok": False, "msg": "交谈观察须传入 目标"}]
+    action["目标"] = target.strip()
+    return _apply_action_cost(slot, explore, action)
+
+def _act_search(slot, explore, action):
+    """搜查翻找：结算搜查场景或翻动物件的成本，发现结果由 judge 承载。"""
     return _apply_action_cost(slot, explore, action)
 
 def _act_attack(slot, explore, action):
@@ -973,32 +1445,6 @@ def _apply_narrative(slot, explore, text):
         return [{"ok": False, "msg": "经历概括须为非空字符串", "_结算错误": True}]
     explore["经历概括"] = text
     return []
-
-def _apply_clue(slot, explore, c):
-    """单条线索更新：按名称 upsert 进 explore.任务摘要及进度（同名整体替换、否则新增）。
-    状态变更条目 c：{类型:线索, 名称, 进展节点, 关闭(可选)}。
-    注意：必须 upsert 而非 append——autosave 路径走 write_explore(preserve_narrative=False)
-    整体覆盖、不经 merge 去重，append 会在该路径下留下同名重复条目。"""
-    name = c.get("名称")
-    if not name:
-        return {"ok": False, "msg": "线索变更须传入 名称"}
-    clue = {"名称": name}
-    if c.get("进展节点") is not None:
-        clue["进展节点"] = c.get("进展节点")
-    if c.get("关闭") is not None:
-        clue["关闭"] = c.get("关闭")
-    clues = explore.get("任务摘要及进度") or []
-    if not isinstance(clues, list):
-        clues = []
-    # 按名称 upsert：同名整体替换，否则新增
-    idx = next((i for i, e in enumerate(clues) if isinstance(e, dict) and e.get("名称") == name), None)
-    if idx is not None:
-        clues = list(clues)
-        clues[idx] = clue
-    else:
-        clues = list(clues) + [clue]
-    explore["任务摘要及进度"] = clues
-    return {"ok": True, "msg": f"线索 {name} 已更新", "变更": f"线索 {name} 已更新"}
 
 def _act_create_slot(slot, explore, action):
     """在指定空闲 slot 建档；支持完整角色或 title-ui 紧凑创建草稿。"""
@@ -1099,6 +1545,10 @@ def _act_restore(slot, explore, action):
     if not target:
         return [{"ok": False, "msg": "加载存档须传入 目标（File_N/时间戳/label/子串）"}]
     state = sm.restore(slot, target)
+    try:
+        qd.clear_all(slot)
+    except OSError:
+        pass
     # 旧档落点可能无场景后缀（相邻出口为空）：补该区域驿站出口场景，使读档后出口可用
     pos = state.get("当前位置") or ""
     if pos and "·" not in pos:
@@ -1175,6 +1625,7 @@ _ACTION_HANDLERS = {
     "删除存档": _act_delete,
     "其他行为": _act_other,
     "交谈观察": _act_talk_observe,
+    "搜查翻找": _act_search,
     "攻击": _act_attack,
     "角色信息": _act_character,
     "查看背包": _act_bag,

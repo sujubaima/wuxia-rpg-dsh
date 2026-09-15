@@ -49,6 +49,7 @@ python3 scripts/engine.py <command>
 | `judge` | 写入 GM 推演后的剧情与状态变化 | `槽位`、`行为`、`当前剧情`、`场景要素`、`经历概括` |
 | `check` | 执行属性或技艺判定 | `槽位`、`属性`、`判定角色`、`对抗`、`基础成功率` |
 | `random-event` | 判断随机事件是否触发 | `槽位`、`基础成功率` |
+| `quest-prepare` | 批量预校验即兴任务创建或扩展蓝图 | `槽位`、`任务`批次数组 |
 | `query` | 查询角色、武学、物品、状态、阵营或场景角色 | `槽位`、`类型`，以及可选查询条件 |
 | `setting` | 聚合查询人物或门派设定 | `槽位`、`目标` |
 | `recommend` | 推荐武学、心法和装备 | `槽位`、`一级属性`、`武学偏好`等 |
@@ -112,6 +113,16 @@ JSON
 
 `check` 对外返回成功或失败及叙事提示，不暴露成功率和掷骰点数。有效判定会写入当前槽位的短期判定留痕，供后续 `judge` 检查叙事是否采用了判定结果。
 
+### 示例：准备即兴任务
+
+```bash
+python3 scripts/engine.py quest-prepare <<'JSON'
+{"槽位":1,"任务":[{"操作":"创建","蓝图":{"任务ID":"sample","名称":"示例线索","起始节点":["end"],"节点":[{"节点ID":"end","完成条件":{},"完成摘要":"线索已了。","终局":"关闭"}]}}]}
+JSON
+```
+
+成功返回任务摘要数组；同轮 `judge` 以 `{"类型":"线索-采用草稿","任务ID列表":["sample"]}` 采用。prepare 只做 dry-run 校验，不改正式任务、事实、奖励或轮次。
+
 ### 示例：基础数据查询
 
 未建档时可用槽位 `0` 查询冻结基线数据：
@@ -136,10 +147,36 @@ JSON
   → GM 拆分主动行为
   → go 结算确定性成本与直接效果
   → 必要时 check / random-event
+  → 如需新建/扩展即兴任务则 quest-prepare
   → GM 推演剧情
-  → judge 写入剧情结果与状态变化
+  → judge 采用草稿并写入剧情结果与状态变化
   → 渲染返回界面
 ```
+
+### 回合状态机
+
+正式槽位将状态持久化到 `.runtime/turn_state.json`；校验失败或被门禁拒绝时保持原状态。
+
+```mermaid
+stateDiagram-v2
+    [*] --> READY
+
+    state "READY：等待玩家输入" as READY
+    state "AWAITING_JUDGE：go 已提交，等待裁定" as AWAITING_JUDGE
+    state "AWAITING_BATTLE_START：等待战前选择" as AWAITING_BATTLE_START
+
+    READY --> READY: go 返回界面
+    READY --> AWAITING_JUDGE: go 无界面且提交成功
+
+    AWAITING_JUDGE --> AWAITING_JUDGE: check / random-event / quest-prepare / 只读查询
+    AWAITING_JUDGE --> AWAITING_JUDGE: 重复 go（返回 go_already_committed）
+    AWAITING_JUDGE --> READY: judge 成功（非 exploration-battle-ui）
+    AWAITING_JUDGE --> AWAITING_BATTLE_START: judge 返回 exploration-battle-ui
+
+    AWAITING_BATTLE_START --> READY: judge 战斗-开始成功
+```
+
+读档成功会清理本轮短期状态并回到 `READY`；`slot=0` 门厅不持久化回合状态。
 
 ### `go`
 
@@ -161,11 +198,21 @@ JSON
 - 只有成功返回 `exploration-ui` 的 `judge` 才推进世界交互轮次；
 - 战斗触发、开始和推进可以成功结算，但不推进大世界轮次。
 
+### `quest-prepare`
+
+`quest-prepare` 只允许在 `AWAITING_JUDGE` 阶段调用。`任务`数组可混合创建和扩展，并在同一事实/任务副本上依次复用 `create_quest()` / `extend_quest()` 校验；全部成功后，以任务 ID 为键整体替换 `.runtime/quest_drafts.json` 的本轮批次。最终 `judge` 用 `线索-采用草稿.任务ID列表` 选择一个或多个任务，按 prepare 顺序重新校验并在当前 `SettlementSession` 中提交。prepare 失败不覆盖旧批次，judge 失败保留批次，judge 成功或读档后清理。
+
 ### 事务边界
 
 `go`和`judge`是两个独立事务。
 
 如果 `go` 已成功、随后 `judge` 失败，引擎只回滚本次 `judge` 的暂存变化，不会撤销已经提交的 `go` 结果。调用方应修正 `judge` 请求并重试，而不是重复执行 `go`。
+
+两者内部共用 `SettlementSession` 和 `MutationExecutor`：状态修改先在暂存区应用，再根据实际 before/after 生成领域事件，并同步执行 trigger 产生的后续 mutation/event，归约稳定后统一提交。事件队列只存在于本次调用的内存中，不写入存档，也不用于 Event Sourcing。
+
+线索公开 notice 只在提交成功后生成：首次公开为 `线索【名称】已发现`，后续有效进展或扩展为 `线索【名称】已更新`。同一结算内按任务去重，发现优先；节点完成摘要和奖励描述仍保留在 `任务摘要及进度` 投影中，内部事件命中与 GM 提示不混入玩家 notice。
+
+该机制保证普通校验或 trigger 失败时不提交暂存数据；多个 JSON 文件仍按既有顺序写入，不具备 WAL 级崩溃原子性。
 
 ## 4. 返回数据与界面路由
 
@@ -191,7 +238,7 @@ JSON
 
 ```text
 scripts/
-├── engine.py                 # 统一 go/judge/check/query CLI 与库入口
+├── engine.py                 # 统一 go/judge/check/quest-prepare/query CLI 与库入口
 ├── settle/                   # 大世界结算编排、事务、字段和 UI 数据
 ├── common/                   # DAO、判定、状态、特效加载、时间工具
 ├── world/                    # 场景、地图、角色、交易、配装、武学与事件
@@ -205,12 +252,23 @@ scripts/
 
 | 模块 | 职责 |
 |---|---|
-| `engine_actions.py` | 行为处理器、成本结算和分发表 |
-| `engine_fields.py` | `judge` 状态变化的校验与应用 |
-| `engine_io.py` | 槽位切换、角色读写、当前状态组装、战斗临时文件管理 |
+| `engine_actions.py` | go adapter、mutation handler、状态快照与事件投影 |
+| `engine_fields.py` | go/judge 共用的字段修改原语 |
+| `mutation_executor.py` | 按类型注册并执行 mutation 的统一入口 |
+| `domain_events.py` | 不可变领域事件、事件工厂、类型常量与 V1 codec |
+| `settlement.py` | 一次 go/judge 的暂存、事件 FIFO、trigger 归约和提交生命周期 |
+| `triggers.py` | 精确类型/命名空间订阅与标准 trigger 输出 |
+| `world_facts.py` | 槽位级规范事实定义、类型、互斥、写入与显式修订 |
+| `quest_models.py` | 任务蓝图、运行态与旧线索迁移 |
+| `quest_conditions.py` | 受限条件 DSL 的校验、求值与引用提取 |
+| `quest_validator.py` | 图可达性、事实覆盖、扩展和跨任务冲突校验 |
+| `quest_engine.py` | 线索创建、发现、扩展、固定点归约与奖励生成 |
+| `quest_projection.py` | 权威任务状态到玩家线索栏和提交后统一提示的投影 |
+| `quest_triggers.py` | 机械事件到规范事实、事实到相关任务归约的触发器 |
+| `engine_io.py` | 槽位切换、角色/商人暂存读写、状态组装、战斗临时文件管理 |
 | `engine_ui.py` | 结构化界面响应与公共字段 |
 | `title_flow.py` | 标题创建草稿、校验、随机分配与初始角色组装 |
-| `engine_state.py` | 角色和场景的事务暂存区 |
+| `engine_state.py` | 角色、场景和商人缓存的兼容暂存引用 |
 
 ### `common/`
 
@@ -249,6 +307,7 @@ scripts/
 - `explore_store.py`：`explore.json` 的收敛读写接口；
 - `tips.py`：`go` 向 `judge` 传递机制变化摘要；
 - `check_log.py`：短期判定留痕；
+- `quest_drafts.py`：即兴任务 prepare 与同轮 judge 之间的非权威草稿；
 - `battle_last.py`：战斗操作与下一次 `judge` 之间的结算底稿；
 - `events_store.py`：探索事件列表的数据入口。
 
@@ -280,12 +339,15 @@ wuxia-rpg/assets/data/
 ```text
 <WUXIA_RPG_SAVE_DIR>/slot_<N>/
 ├── .data/                    # 被修改或新建的数据条目
+├── .runtime/                 # 回合、战斗与即兴任务草稿等短期状态
 ├── meta.json                 # 角色名、创建时间、最近存档等元信息
 ├── explore.json              # 当前世界与叙事状态
 ├── merchant.json             # 当前商人货架缓存
 ├── map_overlay.json          # 运行时新增或改写的场景连接
 ├── scene_types_overlay.json  # 运行时功能场景类型
-└── savefile_*.json           # 快照
+├── world_facts.json          # 规范世界事实定义与当前记录
+├── quest_state.json          # 任务蓝图、节点历史、奖励领取与生命周期
+└── savefile_*.json           # 快照（含上述事实与任务状态）
 ```
 
 DAO 读取时先查当前槽位的 `.data/`，未命中再回退到 `assets/data/`。写入只进入 `.data/`，不会修改基线。因此：
@@ -307,7 +369,7 @@ JSON 文件存在但发生 IO、编码、语法或结构错误时会返回分类
 - 体力和队伍；
 - 当前剧情与场景要素；
 - 经历概括；
-- 线索及其进展；
+- 玩家可见线索及其进展投影（权威任务状态在 `quest_state.json`）；
 - 状态提示；
 - 世界交互轮次 `round`。
 
@@ -321,6 +383,7 @@ JSON 文件存在但发生 IO、编码、语法或结构错误时会返回分类
 |---|---|
 | `tips.json` | `go` 成功后写入；`judge` 成功消费后清除 |
 | `check.json` | 保存最近若干轮判定留痕；读档时清除 |
+| `.runtime/quest_drafts.json` | 保存当前 round 最新成功任务批次，以任务 ID 为键；judge 成功或读档后清除 |
 | `battle_last.json` | 保存最近一次战斗操作底稿；战后清除 |
 
 这些文件是跨 CLI 进程传递上下文的交换介质，不是长期游戏状态，也不应由调用方手工编辑。
@@ -409,7 +472,7 @@ result = engine.go(1, [{"类型": "查看线索"}])
 
 因此，长驻进程必须使用一把覆盖全部槽位的全局锁串行调用引擎，不能只做“每槽位一把锁”。`engine_gateway.py` 统一持有该锁，`engine_service.py` 只处理 HTTP 与生命周期。
 
-八个公开 operation 定义在 Skill 根目录的 `tools.json`，Web 与 DSH 均从 `/api/tools` 注册宿主工具。两者共用服务实现，但默认启动独立进程。多个进程同时写同一存档根目录仍可能发生竞争，应使用不同的 `WUXIA_RPG_SAVE_DIR`，或由更高层确保互斥。
+九个公开 operation 定义在 Skill 根目录的 `tools.json`，Web 与 DSH 均从 `/api/tools` 注册宿主工具。两者共用服务实现，但默认启动独立进程。多个进程同时写同一存档根目录仍可能发生竞争，应使用不同的 `WUXIA_RPG_SAVE_DIR`，或由更高层确保互斥。
 
 ### 渲染模式
 
@@ -419,20 +482,31 @@ result = engine.go(1, [{"类型": "查看线索"}])
 
 ### 新增 `go` 行为
 
-1. 在 `settle/engine_actions.py` 实现处理器；
-2. 注册到行为分发表；
+1. 在 `settle/engine_actions.py` 实现 action adapter；
+2. 将状态效果表示为已注册 mutation，经 `MutationExecutor` 执行；
 3. 明确体力、时间、事务和界面语义；
 4. 更新 `references/wuxia-rpg-actions.md`；
 5. 添加成功、失败和批次回滚测试。
 
-处理器不应直接提交半成品角色状态。角色修改应进入事务暂存区，由外层统一提交。
+行为处理器不得直接写角色、探索状态或商人缓存。复合行为可复用既有结算原语，但只能从注册的 mutation handler 进入。
 
 ### 新增 `judge` 状态变化
 
-1. 在 `settle/engine_fields.py` 定义参数校验与应用逻辑；
-2. 判断它是否需要角色、场景或探索状态事务；
-3. 明确与既有变化同批失败时的回滚行为；
-4. 更新行为契约和端到端测试。
+1. 在 `settle/engine_fields.py` 增加可复用字段原语，或在 `engine_actions.py` 增加专用 mutation handler；
+2. 在 `build_mutation_executor()` 注册 apply、snapshot 和 project；
+3. project 必须依据真实 before/after 生成事件，无实际变化时不发机械事件；
+4. 明确同批失败时的回滚行为，并更新行为契约和测试。
+
+会影响任务条件的语义结果使用已注册 `事实`；`剧情事件`只记录领域事件。两者都不得直接指定任务阶段。
+
+### 新增 trigger
+
+1. 在 `TriggerRegistry` 按精确事件类型或命名空间注册；
+2. handler 只读取不可变 `DomainEvent`，返回 `TriggerOutcome`；
+3. 后续状态变化必须作为 mutation 返回，后续事件必须使用 `EventRequest`；
+4. trigger 不直接调用 DAO 或写盘，并须覆盖固定点和循环上限测试。
+
+事件 envelope 的增删和版本兼容集中在 `EventCodecV1`；业务 handler 不依赖序列化字典布局。
 
 ### 新增数据条目
 
