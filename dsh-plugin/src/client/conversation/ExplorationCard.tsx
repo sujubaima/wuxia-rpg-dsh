@@ -184,6 +184,8 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
       (elements.length > 0 || exits.length > 0) ? jsxs('div', {
         style: {
           borderTop: '1px dashed ' + BORDER_COLOR, paddingTop: 8, marginTop: 4,
+          display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start',
+          columnGap: 20, rowGap: 10,
           opacity: locked ? 0.55 : 1,
           pointerEvents: locked ? 'none' : 'auto',
           transition: 'opacity 150ms ease',
@@ -191,6 +193,7 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
         title: locked ? '回合已推进，此卡仅供回顾' : undefined,
         children: [
           elements.length > 0 ? jsxs('div', {
+            style: { flex: '1 1 240px', minWidth: 0 },
             children: [
               jsx('div', {
                 style: { fontSize: 12, color: DIM_COLOR, letterSpacing: 3, marginBottom: 4 },
@@ -262,7 +265,7 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
             ],
           }) : null,
           exits.length > 0 ? jsxs('div', {
-            style: { marginTop: 8 },
+            style: { flex: '0 0 auto', marginRight: 48 },
             children: [
               jsx('div', {
                 style: { fontSize: 12, color: DIM_COLOR, letterSpacing: 3, marginBottom: 4 },
@@ -274,7 +277,11 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
                   if (direction === '') {
                     return jsx('div', {
                       key: index,
-                      style: { padding: '4px 6px', textAlign: 'center', fontSize: 12, color: TITLE_COLOR, border: '1px solid rgba(138,106,42,0.5)', borderRadius: 4 },
+                      style: {
+                        padding: '4px 8px', fontSize: 12, color: TITLE_COLOR,
+                        border: '1px solid rgba(138,106,42,0.5)', borderRadius: 4,
+                        minHeight: 46, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      },
                       children: `◈ ${currentName}`,
                     })
                   }
@@ -282,12 +289,13 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
                   return jsx('div', {
                     key: index,
                     style: {
-                      padding: '4px 6px', fontSize: 12, borderRadius: 4,
+                      padding: '4px 8px', fontSize: 12, borderRadius: 4,
                       border: '1px solid ' + (target ? 'rgba(138,106,42,0.4)' : BORDER_COLOR),
                       color: target ? '#e8dcc4' : DIM_COLOR,
                       background: target ? 'rgba(200,164,86,0.05)' : 'transparent',
                       cursor: setDraft && target ? 'pointer' : 'default',
                       transition: 'color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease',
+                      minHeight: 46, display: 'flex', alignItems: 'center',
                     },
                     title: setDraft && target ? '填入移动指令' : undefined,
                     onMouseEnter: setDraft && target ? (event: any) => {
@@ -304,7 +312,7 @@ export function ExplorationCard({ data, setDraft, panelRequest, locked }: {
                     } : undefined,
                     onClick: setDraft && target ? () => setDraft('前往' + target) : undefined,
                     children: jsxs('div', {
-                      style: { display: 'flex', justifyContent: 'space-between', gap: 6 },
+                      style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6, flex: 1 },
                       children: [
                         jsx('span', { style: { color: DIM_COLOR }, children: direction }),
                         jsx('span', { children: target || '—' }),

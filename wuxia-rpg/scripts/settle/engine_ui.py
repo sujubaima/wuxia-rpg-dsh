@@ -13,7 +13,9 @@ from store import explore_store as es
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 
-from settle.engine_io import _build_state, _load_map, _read_char, _resolve_region, _set_slot, _station_type, _write_char
+from settle.engine_io import (_build_state, _load_map, _read_char, _read_merchant_cache,
+                              _resolve_region, _set_slot, _station_type, _write_char,
+                              _write_merchant_cache)
 from settle.markdown_ui import attach_render_text
 
 # 驿站路线单价（铜钱/天），按驿站类型：海驿最贵（海船）、边驿次之（偏远险路）、陆驿车马、山驿山路、水驿船票最廉
@@ -439,7 +441,7 @@ def merchant_offer(slot, seller, merchant=False, tags=None):
 
     cur_time = int(es.get(slot, "当前时间", 0) or 0)
     key = _shop_key(slot, seller)
-    data = sm.read_merchant_cache(slot)
+    data = _read_merchant_cache(slot)
     rec = data.get(key)
     if rec and rec.get("上架时间") is not None \
             and rec.get("上架时间") % _MERCHANT_PERIOD == cur_time % _MERCHANT_PERIOD \
@@ -454,7 +456,7 @@ def merchant_offer(slot, seller, merchant=False, tags=None):
         nm = e["名称"].strip("`")
         stock[nm] = int(e.get("数量", 1) or 1)
     data[key] = {"上架时间": cur_time, "库存": stock}
-    sm.write_merchant_cache(slot, data)
+    _write_merchant_cache(slot, data)
     return {"售卖": _sort_items(offer), "来源": "新生成"}
 
 def merchant_buy(slot, buyer, seller, item, count=1, merchant=False, price=None):
@@ -490,7 +492,7 @@ def merchant_buy(slot, buyer, seller, item, count=1, merchant=False, price=None)
     # 扣卖方库存
     if merchant:
         # 商人：扣 merchant.json 货架库存（{物品名: 剩余数量}）
-        data = sm.read_merchant_cache(slot)
+        data = _read_merchant_cache(slot)
         shop = data.get(_shop_key(slot, seller))
         if not shop or "库存" not in shop:
             return {"ok": False, "msg": f"【{seller}】当前无货架（请先调 merchant_offer 取数）"}
@@ -503,7 +505,7 @@ def merchant_buy(slot, buyer, seller, item, count=1, merchant=False, price=None)
             del shop["库存"][item]
         else:
             shop["库存"][item] = stock - count
-        sm.write_merchant_cache(slot, data)
+        _write_merchant_cache(slot, data)
     else:
         # 个人：卖家须有实体，从落盘 NPC 物品栏扣减、铜钱增收
         seller_char = _read_char(slot, seller)
@@ -556,12 +558,12 @@ def merchant_sell(slot, seller, buyer, item, count=1, merchant=False, price=None
 
     if merchant:
         # 商人：物品补入收购方（buyer）当前「区域·地点」的货架库存，不记铜钱
-        data = sm.read_merchant_cache(slot)
+        data = _read_merchant_cache(slot)
         shop = data.setdefault(_shop_key(slot, buyer),
                                {"上架时间": int(es.get(slot, "当前时间", 0) or 0), "库存": {}})
         shop.setdefault("库存", {})
         shop["库存"][item] = int(shop["库存"].get(item, 0) or 0) + count
-        sm.write_merchant_cache(slot, data)
+        _write_merchant_cache(slot, data)
     else:
         # 个人：买家须有实体，扣其铜钱、物品入其栏
         buyer_char = _read_char(slot, buyer)

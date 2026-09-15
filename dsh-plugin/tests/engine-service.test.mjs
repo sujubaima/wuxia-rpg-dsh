@@ -97,10 +97,10 @@ test('Host startup waits for a verified dynamic-port service', async () => {
     assert.equal(health.ok, true)
     assert.equal(health.service, 'wuxia-rpg-engine')
     assert.equal(health.engine, true)
-    assert.equal(health.protocol_version, '1.0')
+    assert.equal(health.protocol_version, '1.2')
     assert.ok(health.instance_id)
     const manifest = await (await fetch(`${serviceUrl}/api/tools`)).json()
-    assert.equal(manifest.tools.length, 8)
+    assert.equal(manifest.tools.length, 9)
     const query = await fetch(`${serviceUrl}/api/v1/operations/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -131,7 +131,7 @@ test('two default Python services receive distinct ports and identities', async 
         service: 'wuxia-rpg-engine',
         instance_id: expectedId,
         engine: true,
-        protocol_version: '1.0',
+        protocol_version: '1.2',
       })
     }
   } finally {
