@@ -96,6 +96,7 @@ class EngineGateway:
             "judge": self._judge,
             "check": self.engine.check,
             "random-event": self.engine.random_event,
+            "quest-prepare": self._quest_prepare,
             "query": self.engine.query,
             "setting": self.engine.setting,
             "recommend": self.engine.recommend,
@@ -150,3 +151,18 @@ class EngineGateway:
         if not isinstance(actions, list):
             raise GatewayProtocolError("judge 缺少 行为（数组）")
         return self.engine.judge(payload["槽位"], payload)
+
+    def _quest_prepare(self, payload):
+        if payload["槽位"] <= 0:
+            raise GatewayProtocolError("quest-prepare 槽位须为正整数")
+        tasks = payload.get("任务")
+        if not isinstance(tasks, list) or not tasks:
+            raise GatewayProtocolError("quest-prepare 缺少 任务（非空数组）")
+        for index, task in enumerate(tasks, 1):
+            if not isinstance(task, dict):
+                raise GatewayProtocolError(f"quest-prepare 第 {index} 项须为对象")
+            if task.get("操作") not in ("创建", "扩展"):
+                raise GatewayProtocolError(f"quest-prepare 第 {index} 项操作须为 创建 或 扩展")
+            if not isinstance(task.get("蓝图"), dict):
+                raise GatewayProtocolError(f"quest-prepare 第 {index} 项缺少 蓝图（对象）")
+        return self.engine.quest_prepare(payload)

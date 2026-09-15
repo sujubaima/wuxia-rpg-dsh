@@ -30,6 +30,7 @@ except Exception as exc:  # noqa: BLE001
 _COMPAT_PATHS = {
     "/api/check": "check",
     "/api/random-event": "random-event",
+    "/api/quest-prepare": "quest-prepare",
     "/api/query": "query",
     "/api/setting": "setting",
     "/api/recommend": "recommend",

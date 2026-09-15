@@ -92,6 +92,10 @@ DATA_SUBDIR = dq.SLOT_DATA_SUBDIR
 EXPLORE_FILENAME = "explore.json"  # slot 常驻实时状态镜像（GM 维护部分），存档前定稿、读档后同步
 MERCHANT_FILENAME = "merchant.json"  # 商人货架缓存（{"区域-地点-卖家名":{"库存":{...},"上架时间":N}}），随存档保存/读档恢复
 MERCHANT_KEY = "merchant_cache"  # 存档 payload 顶层键名
+WORLD_FACTS_FILENAME = "world_facts.json"
+WORLD_FACTS_KEY = "world_facts"
+QUEST_STATE_FILENAME = "quest_state.json"
+QUEST_STATE_KEY = "quest_state"
 
 
 def _mkdir_slot(slot, save_dir=DEFAULT_SAVE_DIR):
@@ -142,6 +146,50 @@ def _load_merchant_cache(target, slot, save_dir=DEFAULT_SAVE_DIR, payload=None):
         raise JsonSchemaError(path, f"{MERCHANT_KEY} 须为对象")
     # 同 read_merchant_cache：弃置旧格式 key（纯卖家名，不含「-」）
     return {k: v for k, v in cache.items() if "-" in k}
+
+
+def _read_slot_state(slot, filename, save_dir=DEFAULT_SAVE_DIR):
+    path = os.path.join(slot_path(slot, save_dir), filename)
+    try:
+        return read_json(path, expected_type=dict)
+    except JsonMissingError:
+        return {}
+
+
+def _write_slot_state(slot, filename, data, save_dir=DEFAULT_SAVE_DIR):
+    if not _slot_writable(slot):
+        return None
+    path = os.path.join(slot_path(slot, save_dir), filename)
+    if not data:
+        if os.path.isfile(path):
+            os.remove(path)
+        return None
+    _mkdir_slot(slot, save_dir)
+    atomic_write_json(path, data, indent=2)
+    return path
+
+
+def read_world_facts(slot, save_dir=DEFAULT_SAVE_DIR):
+    return _read_slot_state(slot, WORLD_FACTS_FILENAME, save_dir)
+
+
+def write_world_facts(slot, data, save_dir=DEFAULT_SAVE_DIR):
+    return _write_slot_state(slot, WORLD_FACTS_FILENAME, data, save_dir)
+
+
+def read_quest_state(slot, save_dir=DEFAULT_SAVE_DIR):
+    return _read_slot_state(slot, QUEST_STATE_FILENAME, save_dir)
+
+
+def write_quest_state(slot, data, save_dir=DEFAULT_SAVE_DIR):
+    return _write_slot_state(slot, QUEST_STATE_FILENAME, data, save_dir)
+
+
+def _load_aux_state(path, payload, key):
+    data = payload.get(key, {})
+    if not isinstance(data, dict):
+        raise JsonSchemaError(path, f"{key} 须为对象")
+    return data
 
 
 # 场景图覆盖层（GM 运行时新增场景，scene.py 为权威读写者，此处仅作 save/restore 同步镜像）
@@ -1016,7 +1064,9 @@ def save(state, slot, save_dir=DEFAULT_SAVE_DIR, label=None, keep=MAX_SAVES_PER_
                "round": read_round(slot, save_dir), "state": state,
                MERCHANT_KEY: read_merchant_cache(slot, save_dir),
                MAP_OVERLAY_KEY: read_map_overlay(slot, save_dir),
-               SCENE_TYPES_OVERLAY_KEY: read_scene_types_overlay(slot, save_dir)}
+               SCENE_TYPES_OVERLAY_KEY: read_scene_types_overlay(slot, save_dir),
+               WORLD_FACTS_KEY: read_world_facts(slot, save_dir),
+               QUEST_STATE_KEY: read_quest_state(slot, save_dir)}
     atomic_write_json(path, payload, indent=2)
     # 同步 explore.json：把存档定稿的过往经历/任务信息等写回实时镜像
     write_explore(slot, state, save_dir, preserve_narrative=False)
@@ -1049,6 +1099,8 @@ def restore(slot, target, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
     saved_merchant = _load_merchant_cache(path, slot, save_dir, payload)
     saved_map = _load_map_overlay(path, slot, save_dir, payload)
     saved_scene_types = _load_scene_types_overlay(path, slot, save_dir, payload)
+    saved_world_facts = _load_aux_state(path, payload, WORLD_FACTS_KEY)
+    saved_quest_state = _load_aux_state(path, payload, QUEST_STATE_KEY)
     live_data_dir = slot_data_dir(slot, save_dir)
     # 清空 slot 写时复制副本（删 slot 的 .data/，重建空 characters/），不触碰冻结基线
     if os.path.exists(live_data_dir):
@@ -1083,6 +1135,8 @@ def restore(slot, target, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
     write_merchant_cache(slot, saved_merchant, save_dir)
     write_map_overlay(slot, saved_map, save_dir)
     write_scene_types_overlay(slot, saved_scene_types, save_dir)
+    write_world_facts(slot, saved_world_facts, save_dir)
+    write_quest_state(slot, saved_quest_state, save_dir)
     # 返回值带「剩余」，供 GM 直接填界面抬头「距下次自动存档 N 轮」，读档后无需另查
     state["剩余"] = rounds_until_save(slot, save_dir)
     return state

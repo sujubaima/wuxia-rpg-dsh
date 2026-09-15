@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.0",
+  "protocol_version": "1.2",
   "tools": [
     {
       "name": "wuxia_go",
@@ -11,7 +11,7 @@
         "additionalProperties": false,
         "properties": {
           "槽位": {"type": "integer", "description": "当前存档槽位号；开始游戏传0，创建角色传开始游戏返回的next_slot"},
-          "行为": {"type": "array", "description": "go 行为数组", "items": {"type": "object", "additionalProperties": true}}
+          "行为": {"type": "array", "description": "go 行为数组；所有行动均受已确定的剧情约束阻止时传空数组，随后继续 judge", "items": {"type": "object", "additionalProperties": true}}
         },
         "required": ["槽位", "行为"]
       },
@@ -43,7 +43,7 @@
           "槽位": {"type": "integer", "description": "当前存档槽位号"},
           "行为": {"type": "array", "description": "状态变更/战斗 action 数组", "items": {"type": "object", "additionalProperties": true}},
           "当前剧情": {"type": "string", "description": "本回合剧情（非战斗裁定必填）"},
-          "场景要素": {"type": "array", "description": "场景要素", "items": {"type": "object", "additionalProperties": true}},
+          "场景要素": {"type": "array", "description": "场景要素，每项描写不超过30字", "items": {"type": "object", "additionalProperties": true}},
           "经历概括": {"type": "string", "description": "经历概括"}
         },
         "required": ["槽位", "行为"]
@@ -113,6 +113,62 @@
           "错误": {"type": "string"},
           "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
           "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
+        }
+      }
+    },
+    {
+      "name": "wuxia_quest_prepare",
+      "operation": "quest-prepare",
+      "title": "武侠 quest prepare",
+      "description": "武侠RPG 批量准备与预校验即兴线索蓝图。仅在 go 已完成、等待 judge 时调用；最新成功批次覆盖本轮旧草稿，最终 judge 按任务ID列表原子采用。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "任务": {
+            "type": "array",
+            "description": "本轮最新任务草稿批次，可混合创建和扩展",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "操作": {"type": "string", "enum": ["创建", "扩展"]},
+                "蓝图": {"type": "object", "description": "完整创建蓝图或扩展定义", "additionalProperties": true},
+                "隐藏": {"type": "boolean", "description": "仅创建可用，缺省false"}
+              },
+              "required": ["操作", "蓝图"]
+            }
+          }
+        },
+        "required": ["槽位", "任务"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "ok": {"type": "boolean"},
+          "任务": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "任务ID": {"type": "string"},
+                "操作": {"type": "string"},
+                "版本": {"type": "integer"},
+                "名称": {"type": "string"},
+                "节点数": {"type": "integer"},
+                "终局数": {"type": "integer"},
+                "扩展点数": {"type": "integer"},
+                "引用事实": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          },
+          "错误": {"type": "string"},
+          "状态冲突": {"type": "string"},
+          "turn_state": {"type": "string"}
         }
       }
     },
