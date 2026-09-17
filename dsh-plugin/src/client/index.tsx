@@ -5,6 +5,10 @@ import { AssistantThinkNode } from './conversation/AssistantThinkNode'
 import { requestDelete } from './conversation/delete-api'
 import { requestBattle } from './conversation/battle-api'
 import { requestPanel } from './conversation/panel-api'
+import { requestTitle } from './conversation/title-api'
+import { gameActivityOf } from './conversation/game-active'
+import { partySourceOf } from './conversation/party-activity'
+import { TitleGate } from './conversation/TitleGate'
 import { WuxiaTurnTail } from './conversation/WuxiaTurnTail'
 import { WuxiaView } from './conversation/WuxiaView'
 import { selectWuxiaResults, wuxiaDefinition } from './conversation/wuxia-data'
@@ -71,6 +75,33 @@ export function apply(ctx: any): void {
     },
   }, WuxiaTurnTail))
 
+  // 开始游戏入口：composer 工具行常驻按钮，点击直调 engine 出标题页模态（不经 LLM）。
+  ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+    name: 'conversation.input.left',
+    id: 'wuxia-title',
+    order: 10,
+    label: () => '开始游戏',
+    inject: (sessionId: any) => {
+      let command: ((line: string) => void) | undefined
+      try {
+        const session = sessions?.binding?.(sessionId)?.session
+        if (session?.command) {
+          command = (line: string) => { void session.command(line) }
+        }
+      } catch { /* session 不可用 */ }
+      let gameActivity
+      try {
+        gameActivity = gameActivityOf(ctx.uiConversation?.binding?.(sessionId))
+      } catch { /* uiConversation 不可用 */ }
+      return {
+        command,
+        gameActivity,
+        titleRequest: () => requestTitle(ctx.remote, sessionId),
+        deleteRequest: (slot: number) => requestDelete(ctx.remote, sessionId, slot),
+      }
+    },
+  }, TitleGate))
+
   ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
     name: 'conversation.composer.dock',
     id: 'wuxia-party',
@@ -82,9 +113,14 @@ export function apply(ctx: any): void {
         const session = sessions?.binding?.(sessionId)?.session
         if (session?.command) command = (line: string) => { void session.command(line) }
       } catch { /* session 不可用 */ }
+      let partySource
+      try {
+        partySource = partySourceOf(ctx.uiConversation?.binding?.(sessionId))
+      } catch { /* uiConversation 不可用 */ }
       return {
         sessionId,
         command,
+        partySource,
         panelRequest: (slot: number, actions: Record<string, unknown>[]) =>
           requestPanel(ctx.remote, sessionId, slot, actions),
       }

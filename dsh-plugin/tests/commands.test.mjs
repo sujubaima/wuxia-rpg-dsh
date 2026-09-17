@@ -70,6 +70,59 @@ test('wuxia-create directive uses the supplied slot and structured conflict retr
   assert.doesNotMatch(payload, /最多\s*3|三次/)
 })
 
+test('wuxia-title fetches the title save list without the LLM', async () => {
+  const requests = []
+  const { server, url } = await listen(async (req, res) => {
+    let body = ''
+    for await (const chunk of req) body += chunk
+    requests.push({ url: req.url, body: JSON.parse(body) })
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({
+      界面: 'title-ui',
+      存档列表: [{ slot: 2, 角色名: '旧档' }],
+      next_slot: 4,
+      版本: '0.9.11',
+    }))
+  })
+
+  try {
+    const command = registerCommands(url).get('wuxia-title')
+    assert.ok(command)
+    const result = await command.handler({})
+    assert.equal(result.kind, 'success')
+    assert.deepEqual(JSON.parse(result.text), {
+      存档列表: [{ slot: 2, 角色名: '旧档' }],
+      next_slot: 4,
+      版本: '0.9.11',
+    })
+    assert.deepEqual(requests, [
+      {
+        url: '/api/v1/operations/go',
+        body: { 槽位: 0, 行为: [{ 类型: '开始游戏' }] },
+      },
+    ])
+  } finally {
+    await close(server)
+  }
+})
+
+test('wuxia-title surfaces engine errors', async () => {
+  const { server, url } = await listen(async (req, res) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ 错误: '存档根目录不可用' }))
+  })
+
+  try {
+    const command = registerCommands(url).get('wuxia-title')
+    assert.ok(command)
+    const result = await command.handler({})
+    assert.equal(result.kind, 'error')
+    assert.match(result.text, /存档根目录不可用/)
+  } finally {
+    await close(server)
+  }
+})
+
 test('wuxia-delete returns refreshed next_slot with the title save list', async () => {
   const requests = []
   const { server, url } = await listen(async (req, res) => {

@@ -9,6 +9,38 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
   if (!commands?.register) return
 
   commands.register({
+    name: 'wuxia-title',
+    description: '直取武侠RPG标题页数据（存档列表/可用slot/版本），不经 LLM',
+    recordInput: false,
+    handler: async () => {
+      // 标题页是纯机制数据：直调 engine 开始游戏，供前端入口按钮直出开始界面。
+      const result = await callEngine(serviceUrl, timeoutMs, {
+        槽位: 0,
+        行为: [{ 类型: '开始游戏' }],
+      }, 'go')
+      const err = typeof result.错误 === 'string' && result.错误
+        ? result.错误
+        : Array.isArray(result.结算)
+          ? (result.结算 as any[]).filter(r => r && r.ok === false).map(r => r.msg).join('；')
+          : ''
+      if (err) return { kind: 'error' as const, text: `标题页获取失败：${err}` }
+      const saves = Array.isArray(result.存档列表) ? result.存档列表 : []
+      const nextSlot = Number(result.next_slot)
+      if (!Number.isInteger(nextSlot) || nextSlot <= 0) {
+        return { kind: 'error' as const, text: '标题页未返回有效 next_slot' }
+      }
+      return {
+        kind: 'success' as const,
+        text: JSON.stringify({
+          存档列表: saves,
+          next_slot: nextSlot,
+          版本: typeof result.版本 === 'string' ? result.版本 : '',
+        }),
+      }
+    },
+  })
+
+  commands.register({
     name: 'wuxia-create',
     description: '按创建向导档案新建武侠RPG角色并生成开场（不在对话流显示为用户气泡）',
     recordInput: false,
