@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { PanelRequest } from './panel-api'
+import { usePartySource, type PartySource } from './party-activity'
 import { applyPartyState, useParty } from './party-store'
 import { useBattleMode } from './battle-mode'
 import { PANEL_BUTTONS, PanelContent, panelLabel, type PanelKind } from './panels/PanelContent'
@@ -38,8 +39,11 @@ export function PartyFloat(props: {
   sessionId?: string
   panelRequest?: PanelRequest
   command?: (line: string) => void
+  partySource?: PartySource
 }) {
-  const party = useParty()
+  // store 存面板直连 engine 的即时反馈；timeline 派生值兜底（切会话/刷新后仍可靠）
+  const stored = useParty()
+  const derived = usePartySource(props.partySource)
   const battleActive = useBattleMode(state => state.active)
   const [open, setOpen] = useState(true)
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null)
@@ -65,12 +69,24 @@ export function PartyFloat(props: {
     setActivePanel(null)
   }, [props.sessionId])
 
+  // timeline 派生值前进（GM 回合落盘/切回会话回填）时清掉面板即时反馈，避免陈旧值遮蔽
+  useEffect(() => {
+    useParty.getState().clear()
+  }, [derived])
+
   useEffect(() => {
     const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight })
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  // store 即时反馈优先，timeline 派生兜底
+  const party = {
+    体力: stored.体力 ?? derived?.体力 ?? null,
+    金钱: stored.金钱 ?? derived?.金钱 ?? null,
+    成员: stored.成员.length > 0 ? stored.成员 : derived?.队伍状态 ?? [],
+    slot: stored.slot ?? derived?.槽位 ?? null,
+  }
   const visible = party.成员.length > 0 || party.体力 != null || party.金钱 != null
   const expanded = open && activePanel !== null
   const floatWidth = expanded
