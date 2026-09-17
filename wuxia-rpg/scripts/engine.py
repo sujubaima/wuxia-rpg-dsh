@@ -49,13 +49,13 @@ from settle.engine_ui import _build_response, _gm_autosave_hint, _inject_narrati
 from settle.engine_actions import (_ACTION_HANDLERS, _act_battle, _act_battle_advance,
                                    _act_battle_trigger, _apply_changes, _apply_narrative,
                                    _maybe_battle_end_ui, build_mutation_executor)
-from settle.domain_events import PLAYER_ACTION_COMPLETED
+from quest.events import PLAYER_ACTION_COMPLETED
 from settle.settlement import SettlementSession
-from settle.quest_triggers import build_quest_trigger_registry
-from settle.quest_conditions import referenced_facts
-from settle.quest_engine import create_quest, extend_quest
-from settle.quest_models import import_legacy_quests, normalize_quest_state
-from settle.world_facts import normalize_world_facts
+from quest.triggers import build_quest_trigger_registry
+from quest.conditions import referenced_facts
+from quest.engine import create_quest, extend_quest, pending_extension_gates
+from quest.models import import_legacy_quests, normalize_quest_state
+from quest.world_facts import normalize_world_facts
 from settle.markdown_ui import attach_render_text
 from store.tips import write_tips as _write_tips, read_tips as _read_tips
 from store import quest_drafts as _quest_drafts
@@ -146,6 +146,12 @@ def _is_restore_only(actions):
     return len(items) == 1 and isinstance(items[0], dict) and items[0].get("类型") == "加载存档"
 
 
+def _is_delete_only(actions):
+    """删除存档是跨回合的存档管理操作，任何回合状态下都放行（同 加载存档 待遇）。"""
+    items = _action_list(actions)
+    return len(items) == 1 and isinstance(items[0], dict) and items[0].get("类型") == "删除存档"
+
+
 _SLOT_POLICY_LOBBY = "lobby"
 _SLOT_POLICY_CLAIM = "claim"
 _SLOT_POLICY_EXISTING = "existing"
@@ -178,6 +184,21 @@ def _turn_origin(actions):
     if types == {"创建角色"}:
         return "创建角色"
     return "战斗操控" if types and types <= _BATTLE_GO_ACTIONS else "普通行动"
+
+
+# 新档开场白·时代背景固定模板（exploration-rules「新档开场白」同文；judge 校验首句，缺失即打回）
+OPENING_ERA_TEMPLATE = (
+    "大明万历年间，天下承平日久，江湖却暗流渐起。\n\n"
+    "西域流沙之间，昔年被中原武林联手剿灭的无极教，竟以幽冥宫之名东山再起，"
+    "兵锋渐指中原。而中原门派却各怀隐患，辽东与西南也隐有战端。江湖危机一触即发。"
+)
+OPENING_ERA_SENTENCE = "大明万历年间，天下承平日久，江湖却暗流渐起。"
+
+
+def _contains_opening_template(payload):
+    """开场白校验：当前剧情 须包含时代背景模板首句（GM 引了首句不会漏掉其余，免比对换行差异）。"""
+    narrative = payload.get("当前剧情")
+    return isinstance(narrative, str) and OPENING_ERA_SENTENCE in narrative
 
 
 def _turn_error(slot, code, message, state, go_result=None):
@@ -513,6 +534,29 @@ def _settle_judge(slot, changes=None, narrative=None):
                         gm_error=True,
                     )
 
+        # 打回校验：任务已行进至扩展点（前置齐、条件真、未激活）而本轮未扩展。
+        # 整体打回（commit 前，磁盘零写入；tips 与回合号原样保留供重调），
+        # GM 须 quest-prepare 准备扩展、经 线索-采用草稿 采纳后重新 judge。
+        # 战斗类 judge 豁免（只提示不打回），避免战斗中强制插入扩展；战后普通 judge 再拦。
+        gates = pending_extension_gates(session.world_facts, session.quest_state)
+        if gates and battle_entries:
+            session.add_hints([{
+                "类型": "任务扩展", "线索": quest_name, "扩展点": node_id,
+                "提示": (f"任务【{quest_name}】已行进至扩展点【{node_id}】，"
+                         "战斗结束后须先 quest-prepare 准备扩展再继续推进"),
+            } for quest_name, node_id in gates])
+        elif gates:
+            described = "；".join(
+                f"任务【{quest_name}】扩展点【{node_id}】" for quest_name, node_id in gates
+            )
+            return _build_response(
+                slot, [], False, sm.rounds_until_save(slot), results,
+                error=(f"{described}已到达但未扩展：本轮 judge 打回，"
+                       "须先以 quest-prepare 准备该扩展点的扩展蓝图，"
+                       "并在 judge 行为中经 线索-采用草稿 采纳后重新提交"),
+                gm_error=True,
+            )
+
         # 全过 → 叙事落 explore + 角色改动/场景登记统一落盘
         if plot and str(plot).strip():  # 战斗类 judge 允许空剧情（战斗推进无探索叙事），空则不覆盖
             explore["当前剧情"] = plot
@@ -610,10 +654,11 @@ def go(slot, actions=None):
 
     state = _turn_state.READY
     restore_only = _is_restore_only(actions)
+    delete_only = _is_delete_only(actions)
     if policy == _SLOT_POLICY_EXISTING:
         turn = _turn_state.read_state(slot)
         state = turn["state"]
-        if state != _turn_state.READY and not restore_only:
+        if state != _turn_state.READY and not restore_only and not delete_only:
             if state == _turn_state.AWAITING_JUDGE:
                 return _turn_error(
                     slot,
@@ -715,6 +760,15 @@ def judge(slot, payload=None):
                                        f"状态变更（如线索）须放「行为」数组内",
                                  gm_error=True)
         return _with_turn_state(result, state)
+    if (state == _turn_state.AWAITING_JUDGE
+            and turn.get("origin") == "创建角色"
+            and not _contains_opening_template(payload)):
+        result = _build_response(slot, [], False, sm.rounds_until_save(slot), [],
+                                 error="新档开场 judge 的「当前剧情」缺少固定开场白（时代背景模板），"
+                                       "请将下段完整写入当前剧情后重新提交 judge：\n"
+                                       + OPENING_ERA_TEMPLATE,
+                                 gm_error=True)
+        return _with_turn_state(result, state)
     narrative = {k: payload[k] for k in ("当前剧情", "场景要素", "经历概括") if k in payload}
     judge_round = sm.read_round(slot)
     result = _settle_judge(slot, actions, narrative)
@@ -809,17 +863,21 @@ def _quest_definition_summary(definition):
     fact_keys = set()
     for node in nodes.values():
         fact_keys.update(referenced_facts(node.get("condition")))
+        fact_keys.update(referenced_facts(node.get("close_condition")))
     return {
         "名称": definition.get("name") or "",
         "节点数": len(nodes),
         "终局数": sum(1 for node in nodes.values() if node.get("outcome")),
         "扩展点数": sum(1 for node in nodes.values() if node.get("extension")),
+        "关闭条件节点数": sum(
+            1 for node in nodes.values() if node.get("close_condition") is not None
+        ),
         "引用事实": sorted(fact_keys),
     }
 
 
 def quest_prepare(payload=None):
-    """批量预校验即兴任务蓝图，并以任务 ID 保存当前 round 最新草稿批次。"""
+    """批量预校验即兴任务蓝图，并以线索名称保存当前 round 最新草稿批次。"""
     payload = {} if payload is None else payload
     if not isinstance(payload, dict):
         return {"ok": False, "错误": "quest-prepare stdin 须为 JSON 对象"}
@@ -858,7 +916,7 @@ def quest_prepare(payload=None):
     import_legacy_quests(sm.read_explore(slot) or {}, quest_state)
     records = []
     prepared = []
-    seen_ids = set()
+    seen_names = set()
 
     for index, item in enumerate(items, 1):
         prefix = f"quest-prepare 第 {index} 项"
@@ -891,10 +949,11 @@ def quest_prepare(payload=None):
         if not isinstance(raw, dict):
             return _with_turn_state({"ok": False, "槽位": slot,
                                      "错误": f"{prefix}须传入 蓝图 对象"}, state)
-        raw_quest_id = raw.get("任务ID")
-        if isinstance(raw_quest_id, str) and raw_quest_id in seen_ids:
+        raw_name = raw.get("名称") or raw.get("name")
+        normalized_name = raw_name.strip() if isinstance(raw_name, str) else None
+        if normalized_name and normalized_name in seen_names:
             return _with_turn_state({"ok": False, "槽位": slot,
-                                     "错误": f"任务草稿批次含重复任务ID【{raw_quest_id}】"}, state)
+                                     "错误": f"任务草稿批次含重复线索名称【{normalized_name}】"}, state)
         try:
             if kind == "create":
                 definition = create_quest(
@@ -909,14 +968,14 @@ def quest_prepare(payload=None):
                 "错误": f"{prefix}任务蓝图预校验失败：{exc}",
             }, state)
 
-        quest_id = definition["quest_id"]
-        if quest_id in seen_ids:
+        quest_name = definition["name"]
+        if quest_name in seen_names:
             return _with_turn_state({"ok": False, "槽位": slot,
-                                     "错误": f"任务草稿批次含重复任务ID【{quest_id}】"}, state)
-        seen_ids.add(quest_id)
+                                     "错误": f"任务草稿批次含重复线索名称【{quest_name}】"}, state)
+        seen_names.add(quest_name)
         summary = _quest_definition_summary(definition)
         records.append({
-            "quest_id": quest_id,
+            "quest_name": quest_name,
             "kind": kind,
             "payload": copy.deepcopy(raw),
             "hidden": hidden,
@@ -925,7 +984,6 @@ def quest_prepare(payload=None):
             "summary": copy.deepcopy(summary),
         })
         prepared.append({
-            "任务ID": quest_id,
             "操作": operation,
             "版本": definition["version"],
             **summary,

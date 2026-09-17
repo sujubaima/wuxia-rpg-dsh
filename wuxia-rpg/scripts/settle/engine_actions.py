@@ -25,15 +25,16 @@ from settle.engine_io import (_build_state, _clear_battle_tmp, _derive_caps, _en
                               _load_map, _read_char, _read_merchant_cache, _resolve_party,
                               _resolve_region, _stage_new_char, _write_char)
 from store.battle_last import read_battle_last as _read_battle_last, write_battle_last as _write_battle_last
-from settle.domain_events import (BATTLE_ENDED, CHARACTER_CREATED, COPPER_CHANGED,
+from quest.events import (BATTLE_ENDED, CHARACTER_CREATED, COPPER_CHANGED,
                                   DEATH_CHANGED, EQUIPMENT_CHANGED, FACT_CHANGED,
                                   HP_CHANGED, ITEM_CHANGED, LOADOUT_CHANGED,
                                   LOCATION_CHANGED, MP_CHANGED, NARRATIVE_EVENT,
-                                  PARTY_CHANGED, QUEST_CREATED, QUEST_DISCOVERED,
-                                  QUEST_EXTENDED, RELATION_CHANGED, SKILL_CHANGED,
+                                  NPC_CONTACTED, PARTY_CHANGED, QUEST_CREATED,
+                                  QUEST_DISCOVERED, QUEST_EXTENDED,
+                                  RELATION_CHANGED, SKILL_CHANGED,
                                   STAMINA_CHANGED, TIME_ADVANCED)
-from settle.quest_engine import create_quest, discover_quest, extend_quest
-from settle.world_facts import upsert_fact
+from quest.engine import create_quest, discover_quest, extend_quest
+from quest.world_facts import upsert_fact
 from settle.engine_fields import (_FIELD_HANDLERS, _apply_mastery, _carry_item_op,
                                   _carry_skill_op, _chg_carry_item, _chg_carry_skill,
                                   _chg_equip, _chg_party, _chg_xinfa)
@@ -1101,7 +1102,7 @@ def _apply_quest_create_mutation(context, mutation):
     definition = create_quest(
         context.session.world_facts, context.session.quest_state, raw, hidden=hidden,
     )
-    runtime = context.session.quest_state["runtimes"][definition["quest_id"]]
+    runtime = context.session.quest_state["runtimes"][definition["name"]]
     if not hidden:
         runtime["discovered_at"] = context.explore.get("当前时间")
     context.session.mark_world_facts_dirty()
@@ -1109,7 +1110,7 @@ def _apply_quest_create_mutation(context, mutation):
     return {
         "ok": True,
         "msg": f"线索【{definition['name']}】已创建",
-        "_quest_id": definition["quest_id"],
+        "_quest_name": definition["name"],
         "_静默": True,
     }
 
@@ -1117,15 +1118,21 @@ def _apply_quest_create_mutation(context, mutation):
 def _apply_quest_discover_mutation(context, mutation):
     if context.session is None:
         return {"ok": False, "msg": "线索发现必须处于 SettlementSession"}
-    quest_id = mutation.get("任务ID") or mutation.get("quest_id")
-    changed, definition = discover_quest(context.session.quest_state, quest_id)
+    extra = set(mutation) - {"类型", "名称"}
+    if extra:
+        raise ValueError(f"线索-发现出现非预期字段：{'、'.join(sorted(extra))}")
+    quest_name = mutation.get("名称")
+    if not isinstance(quest_name, str) or not quest_name.strip():
+        raise ValueError("线索-发现须传入非空 名称")
+    quest_name = quest_name.strip()
+    changed, definition = discover_quest(context.session.quest_state, quest_name)
     if changed:
-        context.session.quest_state["runtimes"][quest_id]["discovered_at"] = context.explore.get("当前时间")
+        context.session.quest_state["runtimes"][quest_name]["discovered_at"] = context.explore.get("当前时间")
         context.session.mark_quest_state_dirty()
     return {
         "ok": True,
         "msg": f"线索【{definition['name']}】已发现",
-        "_quest_id": quest_id,
+        "_quest_name": quest_name,
         "_quest_changed": changed,
         "_静默": True,
     }
@@ -1140,7 +1147,7 @@ def _apply_quest_extend_mutation(context, mutation):
     return {
         "ok": True,
         "msg": f"线索【{definition['name']}】蓝图已扩展",
-        "_quest_id": definition["quest_id"],
+        "_quest_name": definition["name"],
         "_静默": True,
     }
 
@@ -1148,12 +1155,12 @@ def _apply_quest_extend_mutation(context, mutation):
 def _apply_quest_draft_mutation(context, mutation):
     if context.session is None:
         return {"ok": False, "msg": "线索草稿采用必须处于 SettlementSession"}
-    extra = set(mutation) - {"类型", "任务ID列表"}
+    extra = set(mutation) - {"类型", "名称列表"}
     if extra:
         raise ValueError(f"线索-采用草稿出现非预期字段：{'、'.join(sorted(extra))}")
-    quest_ids = mutation.get("任务ID列表")
+    quest_names = mutation.get("名称列表")
     try:
-        batch = qd.select_drafts(context.slot, quest_ids)
+        batch = qd.select_drafts(context.slot, quest_names)
     except JsonReadError as exc:
         raise ValueError(
             f"任务草稿读取失败，须重新 prepare（{exc.detail}）"
@@ -1168,7 +1175,7 @@ def _apply_quest_draft_mutation(context, mutation):
 
     results = []
     for record in batch["records"]:
-        quest_id = record["quest_id"]
+        quest_name = record["quest_name"]
         kind = record["kind"]
         try:
             if kind == "create":
@@ -1179,7 +1186,7 @@ def _apply_quest_draft_mutation(context, mutation):
                     copy.deepcopy(record["payload"]),
                     hidden=hidden,
                 )
-                runtime = context.session.quest_state["runtimes"][definition["quest_id"]]
+                runtime = context.session.quest_state["runtimes"][definition["name"]]
                 if not hidden:
                     runtime["discovered_at"] = context.explore.get("当前时间")
                 event_type = QUEST_CREATED
@@ -1192,21 +1199,21 @@ def _apply_quest_draft_mutation(context, mutation):
                 )
                 event_type = QUEST_EXTENDED
             else:
-                raise ValueError(f"任务草稿【{quest_id}】类型无效")
+                raise ValueError(f"任务草稿【{quest_name}】类型无效")
         except ValueError as exc:
             raise ValueError(
-                f"任务草稿【{quest_id}】已过期，须重新 prepare（{exc}）"
+                f"任务草稿【{quest_name}】已过期，须重新 prepare（{exc}）"
             ) from exc
 
         actual_hash = qd.definition_hash(kind, definition, hidden)
         if actual_hash != record["content_hash"]:
-            raise ValueError(f"任务草稿【{quest_id}】已过期，须重新 prepare")
+            raise ValueError(f"任务草稿【{quest_name}】已过期，须重新 prepare")
 
         results.append({
             "ok": True,
             "msg": (f"线索【{definition['name']}】已创建"
                     if kind == "create" else f"线索【{definition['name']}】蓝图已扩展"),
-            "_quest_id": definition["quest_id"],
+            "_quest_name": definition["name"],
             "_quest_event_type": event_type,
             "_静默": True,
         })
@@ -1219,10 +1226,10 @@ def _apply_quest_draft_mutation(context, mutation):
 def _project_quest_draft_event(context, mutation, before, after, results):
     events = []
     for result in results:
-        quest_id = result.get("_quest_id")
+        quest_name = result.get("_quest_name")
         event_type = result.get("_quest_event_type")
-        if quest_id and event_type in (QUEST_CREATED, QUEST_EXTENDED):
-            events.append(context.event_factory.create(event_type, {"quest_id": quest_id}))
+        if quest_name and event_type in (QUEST_CREATED, QUEST_EXTENDED):
+            events.append(context.event_factory.create(event_type, {"quest_name": quest_name}))
     return events
 
 
@@ -1231,8 +1238,8 @@ def _project_quest_event(event_type):
         result = results[0] if results else {}
         if event_type == QUEST_DISCOVERED and not result.get("_quest_changed"):
             return []
-        quest_id = result.get("_quest_id")
-        return [context.event_factory.create(event_type, {"quest_id": quest_id})] if quest_id else []
+        quest_name = result.get("_quest_name")
+        return [context.event_factory.create(event_type, {"quest_name": quest_name})] if quest_name else []
     return project
 
 
@@ -1256,6 +1263,8 @@ def build_mutation_executor():
     executor.register("线索-创建", _apply_quest_create_mutation, project=_project_quest_event(QUEST_CREATED))
     executor.register("线索-发现", _apply_quest_discover_mutation,
                       project=_project_quest_event(QUEST_DISCOVERED))
+    executor.register("接触记录", _apply_contact_mutation,
+                      project=_project_contact_event)
     executor.register("线索-扩展", _apply_quest_extend_mutation,
                       project=_project_quest_event(QUEST_EXTENDED))
     executor.register("线索-采用草稿", _apply_quest_draft_mutation,
@@ -1374,13 +1383,41 @@ def _act_other(slot, explore, action):
     """其他行为：琐碎不推进剧情的通用行为。行为类，扣体力+推进时间，返回 exploration-ui。"""
     return _apply_action_cost(slot, explore, action)
 
+def _apply_contact_mutation(context, mutation):
+    """接触记录：玩家已与某 NPC 接触（交谈观察目标为 NPC 时自动提交）。"""
+    name = mutation.get("角色")
+    if not isinstance(name, str) or not name.strip():
+        return {"ok": False, "msg": "接触记录须传入 角色"}
+    return {
+        "ok": True,
+        "msg": f"已记录与【{name.strip()}】的接触",
+        "变更": "",
+        "_静默": True,
+        "_contact": name.strip(),
+    }
+
+
+def _project_contact_event(context, mutation, before, after, results):
+    result = results[0] if results else {}
+    name = result.get("_contact")
+    return [context.event_factory.create(NPC_CONTACTED, {"character": name})] if name else []
+
+
 def _act_talk_observe(slot, explore, action):
-    """交谈观察：与指定目标交谈或观察，剧情及数据后果由 judge 承载。"""
+    """交谈观察：与指定目标交谈或观察，剧情及数据后果由 judge 承载。
+    目标为已知 NPC 时自动提交接触记录，写入 character:<名>.contact@player 事实。"""
     target = action.get("目标")
     if not isinstance(target, str) or not target.strip():
         return [{"ok": False, "msg": "交谈观察须传入 目标"}]
-    action["目标"] = target.strip()
-    return _apply_action_cost(slot, explore, action)
+    target = target.strip()
+    action["目标"] = target
+    results = _apply_action_cost(slot, explore, action)
+    if any(not item.get("ok", True) for item in results):
+        return results
+    player = (sm.read_meta(slot) or {}).get("角色名")
+    if target != player and dq.read_character_file(target) is not None:
+        results = results + _execute_mutations([{"类型": "接触记录", "角色": target}])
+    return results
 
 def _act_search(slot, explore, action):
     """搜查翻找：结算搜查场景或翻动物件的成本，发现结果由 judge 承载。"""
@@ -1474,6 +1511,9 @@ def _act_create_slot(slot, explore, action):
         new_pos = f"{region}·{station}"
         es.set(new_slot, "当前位置", new_pos, narrative=True)
         r["当前位置"] = new_pos
+    preset_hints = r.pop("GM线索提示", [])
+    if est._SESSION is not None:
+        est._SESSION.add_hints(preset_hints)
     # 不在此存首档：建号后 GM 调 judge 写开场白时统一存档（存档后 rnd 才+1），首档即含开场白
     results = [{"ok": True, "msg": f"已创建角色 slot {new_slot} {char['名称']}",
                 "变更": "角色已创建", "新建slot": new_slot,
@@ -1564,7 +1604,7 @@ def _act_restore(slot, explore, action):
         os.remove(os.path.join(sm.slot_path(slot), "check.json"))
     except OSError:
         pass
-    out = {"ok": True, "msg": f"已加载存档 {target}。建议下一轮推演开始前重新读取 wuxia-rpg-worldview.md 与该地区 wuxia-rpg-storylines.md，避免设定冲突",
+    out = {"ok": True, "msg": f"已加载存档 {target}。下一轮推演以 wuxia-rpg-worldview.md、当前线索栏和 GM 线索提示为准",
            "变更": "存档已加载", "剩余": state.get("剩余")}
     # 读档即回顾：经历概括与线索栏随返回顶层透出（GM 续写剧情据此，不再单独调 event summary）
     out["经历概括"] = state.get("经历概括")

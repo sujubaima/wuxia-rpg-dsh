@@ -120,7 +120,7 @@
       "name": "wuxia_quest_prepare",
       "operation": "quest-prepare",
       "title": "武侠 quest prepare",
-      "description": "武侠RPG 批量准备与预校验即兴线索蓝图。仅在 go 已完成、等待 judge 时调用；最新成功批次覆盖本轮旧草稿，最终 judge 按任务ID列表原子采用。",
+      "description": "武侠RPG 批量准备与预校验即兴线索蓝图。仅在 go 已完成、等待 judge 时调用；最新成功批次覆盖本轮旧草稿，最终 judge 按名称列表原子采用。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -155,7 +155,6 @@
               "type": "object",
               "additionalProperties": true,
               "properties": {
-                "任务ID": {"type": "string"},
                 "操作": {"type": "string"},
                 "版本": {"type": "integer"},
                 "名称": {"type": "string"},

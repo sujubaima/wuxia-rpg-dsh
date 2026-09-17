@@ -71,6 +71,11 @@ def normalize_definition(raw, fact_key=None, sample_value=None):
     revision_policy = raw.get("revision_policy") or raw.get("修订策略") or "explicit"
     if revision_policy not in REVISION_POLICIES:
         raise ValueError(f"事实【{key}】修订策略【{revision_policy}】不受支持")
+    description = raw.get("description")
+    if description is None:
+        description = raw.get("描述")
+    if description is not None and not isinstance(description, str):
+        raise ValueError(f"事实【{key}】描述须为字符串")
     return {
         "fact_key": key,
         "subject": raw.get("subject") or raw.get("主体") or subject,
@@ -80,6 +85,7 @@ def normalize_definition(raw, fact_key=None, sample_value=None):
         "allowed_values": copy.deepcopy(allowed) if allowed is not None else None,
         "exclusive_group": raw.get("exclusive_group") or raw.get("互斥组"),
         "revision_policy": revision_policy,
+        "description": description.strip() if isinstance(description, str) else "",
     }
 
 
@@ -99,6 +105,15 @@ def register_definition(store, raw, fact_key=None, sample_value=None):
         raise ValueError(f"事实定义【{key}】与已有定义不一致")
     if existing is None:
         store["definitions"][key] = definition
+        return True
+    existing_description = existing.get("description") or ""
+    new_description = definition.get("description") or ""
+    if existing_description and new_description and existing_description != new_description:
+        raise ValueError(
+            f"事实定义【{key}】描述与已有定义不一致；现有描述【{existing_description}】"
+        )
+    if not existing_description and new_description:
+        existing["description"] = new_description
         return True
     return False
 

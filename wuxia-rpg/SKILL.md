@@ -1,6 +1,6 @@
 ---
 name: wuxia-rpg
-version: 0.9.10
+version: 0.9.11
 description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开始游戏""开始大世界模拟""开始战斗模拟"等），或询问游戏机制时触发。
 ---
 
@@ -11,12 +11,11 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
 | 文档 | 功能 | 读取时机 |
 |------|------|----------|
 | [wuxia-rpg-game-spec.md](./references/wuxia-rpg-game-spec.md) | 每回合强制自检（静默、时序、数据、线索、界面） | **必读** |
-| [wuxia-rpg-worldview.md](./references/wuxia-rpg-worldview.md) | 世界观、地区与故事线索引 | **必读** |
+| [wuxia-rpg-worldview.md](./references/wuxia-rpg-worldview.md) | 世界观、地区与势力分布 | **必读** |
 | [wuxia-rpg-roster.md](./references/wuxia-rpg-roster.md) | 预设人物名册（按阵营；含人设与关联人物） | 涉入或引用人物时 |
 | [wuxia-rpg-exploration-rules.md](./references/wuxia-rpg-exploration-rules.md) | 推演框架与 GM 行为准则；战斗/场景/NPC/线索/判定/随机事件等分册按需读 | **必读** |
 | [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) | go 行为、配置、战斗与 judge 状态变更参数 | 组装 `行为` 数组或落盘状态变更时 |
 | [wuxia-rpg-data-schema.md](./references/wuxia-rpg-data-schema.md) | 角色、武学、物品、状态、阵营字段 | 创建角色、写临时 NPC 或查字段时 |
-| [wuxia-rpg-storylines.md](./references/wuxia-rpg-storylines.md) | 各地区故事线与伏笔 | 玩家涉入对应地区、人物或线索时 |
 | [wuxia-rpg-ming-customs.md](./references/wuxia-rpg-ming-customs.md) | 明中晚期衣食住行与社会风俗 | 描写市井、器物、名物与风土时 |
 | [wuxia-rpg-dao-query.md](./references/wuxia-rpg-dao-query.md) | 数据、地图与判定接口 | 核实设定、属性、场景或执行判定时 |
 | [wuxia-rpg-battle-system.md](./references/wuxia-rpg-battle-system.md) | 战斗引擎机制 | 玩家询问战斗机制或调试时 |
@@ -50,7 +49,7 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
    - 有 `界面`：按「界面渲染」输出（见下）。
    - 无 `界面`：基于 go 的真实结果推演剧情，再进入 judge。
 3. **推演与任务准备**：完整读取 `wuxia-rpg-exploration-rules.md`，先完成必要的 check / random-event；若本轮需创建或扩展即兴线索，用一次 `quest-prepare` 批量准备。
-4. **judge 剧情落盘**：按 `wuxia-rpg-game-spec.md` 自检，以 `线索-采用草稿` 的 `任务ID列表` 采用所需任务，并提交剧情、场景要素、事实及其他状态变更。
+4. **judge 剧情落盘**：按 `wuxia-rpg-game-spec.md` 自检，以 `线索-采用草稿` 的 `名称列表` 采用所需任务，并提交剧情、场景要素、事实及其他状态变更。
 5. **渲染**：按「界面渲染」原样输出 engine 返回。
 
 ```text
@@ -120,7 +119,7 @@ echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts
 - judge 承载 GM 推演结果：状态变更、战斗触发/开始/推进及顶层叙事字段；`当前剧情`必填，战斗推进轮可为空。`场景要素.特殊指令`仅限当前场景绑定的功能 NPC，且严格按驿站远行、客栈投宿、店铺购买/出售设置；普通 NPC、物件和环境要素不得携带。
 - check 承载判定掷骰：剧情依赖角色技艺或一级属性高低时先调，据 `结果`（成功/失败）推演；掷骰留痕，judge 时核对是否已高亮带入剧情。`对抗` 为角色名或 `@数值`。
 - random-event 承载随机事件判定：移动等行动按 `基础成功率`（缺省15，可按天气/区域调整）判断是否触发；返回 触发/未触发，不落盘留痕。
-- quest-prepare 只准备即兴线索蓝图：`任务`数组可混合创建与扩展；后一次成功调用整体覆盖本轮旧批次。它不推进回合、不落正式状态；同轮 judge 用 `线索-采用草稿` 的 `任务ID列表` 采用。
+- quest-prepare 只准备即兴线索蓝图：`任务`数组可混合创建与扩展；后一次成功调用整体覆盖本轮旧批次。它不推进回合、不落正式状态；同轮 judge 用 `线索-采用草稿` 的 `名称列表` 采用。
 - query 的 `类型:"场景角色"`：传 `位置`（区域·场景）返回该场景的功能NPC与在场预设角色。
 - judge 的 `抵达` 变更：用于 NPC 位置变化或玩家被动移动（被带走、被押送、被擒等）；传 `角色` 与 `位置`（区域·场景），若改的是主控则落盘玩家当前位置。玩家主动移动已由 go 的 `远行`/`抵达` 落盘，judge 勿重复。
 - engine go 在不返回界面（GM 下调 judge）时，会返回当前区域的 `区域场景` 和可登场预设角色 `区域人物`，直接使用、无需另查；仅查询其他区域，或 go 未返回 `区域场景` 时，才调用 `wuxia_map_query`（bash 回退 `engine.py map-query`）。

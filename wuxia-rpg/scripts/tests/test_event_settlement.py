@@ -10,14 +10,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 sys.path.insert(0, SCRIPTS)
 
-from settle.domain_events import (EventCodecV1, EventFactory, EventRequest,
+from quest.events import (EventCodecV1, EventFactory, EventRequest,
                                   NARRATIVE_EVENT, STAMINA_CHANGED, TIME_ADVANCED)
 from settle.engine_actions import _ACTION_HANDLERS, build_mutation_executor
 from settle.engine_io import (_read_merchant_cache, _stage_new_char,
                               _write_merchant_cache)
 from settle.mutation_executor import MutationExecutor
 from settle.settlement import SettlementSession
-from settle.triggers import TriggerOutcome, TriggerRegistry
+from quest.registry import TriggerOutcome, TriggerRegistry
 
 
 class DomainEventTest(unittest.TestCase):

@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """机械事件→规范事实、事实→任务归约及 GM 候选提示。"""
-from settle.domain_events import (CHARACTER_CREATED, COPPER_CHANGED, DEATH_CHANGED,
+from quest.events import (CHARACTER_CREATED, COPPER_CHANGED, DEATH_CHANGED,
                                   FACT_CHANGED, HP_CHANGED, ITEM_CHANGED,
-                                  LOCATION_CHANGED, MP_CHANGED, PARTY_CHANGED,
-                                  PLAYER_ACTION_COMPLETED, QUEST_CREATED,
-                                  QUEST_DISCOVERED, QUEST_EXTENDED,
-                                  RELATION_CHANGED, SKILL_CHANGED,
+                                  LOCATION_CHANGED, MP_CHANGED, NPC_CONTACTED,
+                                  PARTY_CHANGED, PLAYER_ACTION_COMPLETED,
+                                  QUEST_CREATED, QUEST_DISCOVERED,
+                                  QUEST_EXTENDED, RELATION_CHANGED, SKILL_CHANGED,
                                   STAMINA_CHANGED, TIME_ADVANCED)
-from settle.quest_engine import potential_progress_hints, reduce_affected_quests
-from settle.triggers import TriggerOutcome, TriggerRegistry
+from quest.engine import potential_progress_hints, reduce_affected_quests
+from quest.registry import TriggerOutcome, TriggerRegistry
+from quest.world_facts import upsert_fact
 
 
 def _segment(value):
     return str(value).replace("@", ":").replace(".", ":")
+
+
+def _region(value):
+    return str(value).split("·", 1)[0].strip() if value is not None else ""
 
 
 def _fact_mutation(fact_key, value, value_type, allowed_values=None):
@@ -49,7 +54,10 @@ def _mechanical_fact_mutations(event):
         if after is None:
             return ()
         subject = f"character:{_segment(character)}" if character else "player"
-        return (_fact_mutation(f"{subject}.location@world", after, "string"),)
+        mutations = [_fact_mutation(f"{subject}.location@world", after, "string")]
+        if not character and _region(after):
+            mutations.append(_fact_mutation("player.region@world", _region(after), "string"))
+        return tuple(mutations)
     if event.is_type(ITEM_CHANGED) and character and event.get("item"):
         key = f"character:{_segment(character)}.item:{_segment(event.get('item'))}:quantity@world"
         return (_fact_mutation(key, after, "number"),)
@@ -61,7 +69,35 @@ def _mechanical_fact_mutations(event):
         return tuple(mutations)
     if event.is_type(CHARACTER_CREATED) and character:
         return (_fact_mutation(f"character:{_segment(character)}.exists@world", True, "bool"),)
+    if event.is_type(NPC_CONTACTED) and character:
+        return (_fact_mutation(f"character:{_segment(character)}.contact@player", True, "bool"),)
     return ()
+
+
+def bootstrap_mechanical_facts(world_facts, character, explore):
+    """写入新档已经成立、但不会经过普通领域事件的基础机械事实。"""
+    name = (character or {}).get("名称")
+    mutations = [
+        _fact_mutation("player.region@world", _region((explore or {}).get("当前位置")), "string"),
+        _fact_mutation("world.time@world", int((explore or {}).get("当前时间", 0) or 0), "number"),
+        _fact_mutation("party.stamina@world", int((explore or {}).get("体力", 0) or 0), "number"),
+    ]
+    if name:
+        mutations.append(
+            _fact_mutation(f"character:{_segment(name)}.exists@world", True, "bool")
+        )
+    for mutation in mutations:
+        if mutation["值"] in (None, ""):
+            continue
+        upsert_fact(
+            world_facts,
+            mutation["事实"],
+            mutation["值"],
+            status=mutation["状态"],
+            source="system",
+            definition=mutation["_定义"],
+        )
+    return world_facts
 
 
 def _mechanical_handler(event, session):
@@ -71,21 +107,19 @@ def _mechanical_handler(event, session):
 
 def _reduce_handler(event, session):
     quest_event = event.type in (QUEST_CREATED, QUEST_DISCOVERED, QUEST_EXTENDED)
-    quest_id = event.get("quest_id") if quest_event else None
+    quest_name = event.get("quest_name") if quest_event else None
     fact_key = event.get("fact_key") if event.is_type(FACT_CHANGED) else None
+    # 线索扩展是 GM 内部行为，不向玩家广播；只有 创建/发现 与节点结算对外可见
     public_notice = None
-    if quest_id:
-        definition = session.quest_state.get("definitions", {}).get(quest_id) or {}
-        runtime = session.quest_state.get("runtimes", {}).get(quest_id) or {}
+    if quest_name and event.type in (QUEST_CREATED, QUEST_DISCOVERED):
+        runtime = session.quest_state.get("runtimes", {}).get(quest_name) or {}
         if runtime.get("lifecycle") != "hidden":
-            kind = "updated" if event.is_type(QUEST_EXTENDED) else "discovered"
             public_notice = {
-                "quest_id": quest_id,
-                "quest_name": definition.get("name") or quest_id,
-                "kind": kind,
+                "quest_name": quest_name,
+                "kind": "discovered",
             }
     mutations, events, notices, hints = reduce_affected_quests(
-        session.world_facts, session.quest_state, fact_key=fact_key, quest_id=quest_id,
+        session.world_facts, session.quest_state, fact_key=fact_key, quest_name=quest_name,
     )
     if events or notices or mutations:
         session.mark_quest_state_dirty()

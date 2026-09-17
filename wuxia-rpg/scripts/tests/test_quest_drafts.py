@@ -21,7 +21,6 @@ class QuestDraftStoreTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.save_dir = self.temp.name
         self.definition = {
-            "quest_id": "draft-test",
             "version": 1,
             "name": "草稿测试",
             "intro": "",
@@ -30,7 +29,8 @@ class QuestDraftStoreTest(unittest.TestCase):
             "nodes": {
                 "start": {
                     "node_id": "start", "requires": [], "join": "all",
-                    "condition": {}, "summary": "开始", "next": [],
+                    "condition": {}, "summary": "开始",
+                    "close_condition": None, "close_summary": None, "next": [],
                     "outcome": "closed", "visible": True, "extension": False,
                     "reward": None, "effects": [],
                 },
@@ -42,14 +42,14 @@ class QuestDraftStoreTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def _record(self, quest_id="draft-test"):
+    def _record(self, quest_name="draft-test"):
         digest = quest_drafts.definition_hash("create", self.definition, False)
         return {
             "kind": "create",
-            "payload": {"任务ID": quest_id},
+            "payload": {"名称": quest_name},
             "hidden": False,
             "content_hash": digest,
-            "quest_id": quest_id,
+            "quest_name": quest_name,
             "definition_version": 1,
             "summary": {"名称": "草稿测试"},
         }
@@ -78,7 +78,7 @@ class QuestDraftStoreTest(unittest.TestCase):
             1, ["second", "draft-test"], self.save_dir
         )
         self.assertEqual(
-            [record["quest_id"] for record in selected["records"]],
+            [record["quest_name"] for record in selected["records"]],
             ["draft-test", "second"],
         )
         self.assertIn(os.path.join("slot_1", ".runtime", "quest_drafts.json"),

@@ -10,6 +10,7 @@ engine.py 仅留顶层入口(go/judge/CLI + 主流程编排),本包是其按职�
 依赖方向(单向自底向上,无环):
 engine.py → engine_actions → engine_fields/engine_ui → engine_io → engine_state
 分发表跟随其函数所在层:_FIELD_HANDLERS 在 fields、_ACTION_HANDLERS 在 actions、_UI_BUILDERS 在 ui。
-本包依赖 store(存档)/world(业务)/common(dao/status_manager)/combat(battle),不被这些包反向依赖。
+本包依赖 store(存档)/world(业务)/common(dao/status_manager)/combat(battle)/quest(任务状态机),不被前者反向依赖;
+quest 包自足(事件协议/世界事实/任务状态机均在其内),不反向依赖本包任何模块。
 """
 

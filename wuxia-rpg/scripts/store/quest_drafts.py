@@ -10,7 +10,7 @@ from common.json_io import JsonMissingError, JsonSchemaError, atomic_write_json,
 from store import save_manager as sm
 
 
-VERSION = 2
+VERSION = 3
 _RUNTIME_SUBDIR = ".runtime"
 _FILENAME = "quest_drafts.json"
 _KINDS = {"create", "extend"}
@@ -44,7 +44,7 @@ def _validate_record(path, key, raw):
     if not isinstance(raw, dict):
         raise JsonSchemaError(path, f"草稿【{key}】须为对象")
     required = {
-        "quest_id", "kind", "payload", "hidden", "content_hash",
+        "quest_name", "kind", "payload", "hidden", "content_hash",
         "definition_version", "summary",
     }
     missing = required - set(raw)
@@ -52,8 +52,8 @@ def _validate_record(path, key, raw):
         raise JsonSchemaError(path, f"草稿【{key}】缺少字段：{sorted(missing)}")
     if set(raw) - required:
         raise JsonSchemaError(path, f"草稿【{key}】含非预期字段：{sorted(set(raw) - required)}")
-    if raw.get("quest_id") != key:
-        raise JsonSchemaError(path, f"草稿键【{key}】与 quest_id 不一致")
+    if raw.get("quest_name") != key:
+        raise JsonSchemaError(path, f"草稿键【{key}】与 quest_name 不一致")
     if raw.get("kind") not in _KINDS:
         raise JsonSchemaError(path, f"草稿【{key}】kind 不合法")
     if not isinstance(raw.get("payload"), dict):
@@ -87,7 +87,7 @@ def read_drafts(slot, save_dir=sm.DEFAULT_SAVE_DIR):
     if set(data) - required:
         raise JsonSchemaError(path, f"草稿文件含非预期字段：{sorted(set(data) - required)}")
     if type(data.get("version")) is not int or data["version"] != VERSION:
-        raise JsonSchemaError(path, f"version 应为整数 {VERSION}")
+        raise JsonSchemaError(path, f"version 应为整数 {VERSION}，请重新执行 quest-prepare")
     if type(data.get("slot")) is not int or data["slot"] <= 0:
         raise JsonSchemaError(path, "slot 须为正整数")
     if data["slot"] != int(slot):
@@ -97,7 +97,7 @@ def read_drafts(slot, save_dir=sm.DEFAULT_SAVE_DIR):
     order = data.get("order")
     if (not isinstance(order, list) or any(not isinstance(item, str) or not item for item in order)
             or len(order) != len(set(order))):
-        raise JsonSchemaError(path, "order 须为无重复非空任务 ID 数组")
+        raise JsonSchemaError(path, "order 须为无重复非空线索名称数组")
     drafts = data.get("drafts")
     if not isinstance(drafts, dict):
         raise JsonSchemaError(path, "drafts 须为对象")
@@ -127,13 +127,13 @@ def write_batch(slot, round_number, records, save_dir=sm.DEFAULT_SAVE_DIR):
     order = []
     drafts = {}
     for record in records:
-        quest_id = record.get("quest_id") if isinstance(record, dict) else None
-        if not isinstance(quest_id, str) or not quest_id:
-            raise ValueError("任务草稿缺少 quest_id")
-        if quest_id in drafts:
-            raise ValueError(f"任务草稿批次含重复任务ID【{quest_id}】")
-        drafts[quest_id] = _validate_record(path, quest_id, record)
-        order.append(quest_id)
+        quest_name = record.get("quest_name") if isinstance(record, dict) else None
+        if not isinstance(quest_name, str) or not quest_name:
+            raise ValueError("任务草稿缺少 quest_name")
+        if quest_name in drafts:
+            raise ValueError(f"任务草稿批次含重复线索名称【{quest_name}】")
+        drafts[quest_name] = _validate_record(path, quest_name, record)
+        order.append(quest_name)
     data = {
         "version": VERSION,
         "slot": int(slot),
@@ -145,25 +145,25 @@ def write_batch(slot, round_number, records, save_dir=sm.DEFAULT_SAVE_DIR):
     return copy.deepcopy(data)
 
 
-def select_drafts(slot, quest_ids, save_dir=sm.DEFAULT_SAVE_DIR):
+def select_drafts(slot, quest_names, save_dir=sm.DEFAULT_SAVE_DIR):
     """按当前批次顺序返回指定任务草稿，并在返回前确认全部存在。"""
-    if (not isinstance(quest_ids, list) or not quest_ids
-            or any(not isinstance(item, str) or not item for item in quest_ids)):
-        raise ValueError("线索-采用草稿须传入非空 任务ID列表")
-    if len(quest_ids) != len(set(quest_ids)):
-        raise ValueError("线索-采用草稿的 任务ID列表 不得重复")
+    if (not isinstance(quest_names, list) or not quest_names
+            or any(not isinstance(item, str) or not item for item in quest_names)):
+        raise ValueError("线索-采用草稿须传入非空 名称列表")
+    if len(quest_names) != len(set(quest_names)):
+        raise ValueError("线索-采用草稿的 名称列表 不得重复")
     data = read_drafts(slot, save_dir)
-    missing = [quest_id for quest_id in quest_ids if quest_id not in data["drafts"]]
+    missing = [quest_name for quest_name in quest_names if quest_name not in data["drafts"]]
     if missing:
         raise ValueError(f"任务草稿不存在【{'、'.join(missing)}】")
-    selected = set(quest_ids)
+    selected = set(quest_names)
     return {
         "slot": data["slot"],
         "round": data["round"],
         "records": [
-            copy.deepcopy(data["drafts"][quest_id])
-            for quest_id in data["order"]
-            if quest_id in selected
+            copy.deepcopy(data["drafts"][quest_name])
+            for quest_name in data["order"]
+            if quest_name in selected
         ],
     }
 
