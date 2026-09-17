@@ -10,7 +10,7 @@
 - battle_last  battle_last.json(战斗操控 go 的结算底稿,judge 战斗-推进读回)
 - battle_runtime  slot/.runtime/battle 下的战斗状态、元信息、战报路径与清理
 - check_log    check.json(判定掷骰留痕,judge 按轮次核对提示带出)
-- quest_drafts slot/.runtime/quest_drafts.json(本轮最新即兴任务批次,以任务ID为键,judge 成功或读档后清理)
+- quest_drafts slot/.runtime/quest_drafts.json(本轮最新即兴任务批次,以线索名称为键,judge 成功或读档后清理)
 
 功能边界:本包是所有磁盘状态读写的唯一收敛点。依赖 common.dao / common.time_utils;
 被 settle / world / combat / common.check 引用。dao(数据读写层)因业务强耦合留 common,不在本包。

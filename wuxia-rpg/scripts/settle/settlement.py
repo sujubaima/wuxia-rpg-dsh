@@ -3,17 +3,17 @@
 """一次 go/judge 调用内的暂存、事件与触发归约生命周期。"""
 from collections import deque
 
-from settle.quest_models import import_legacy_quests, normalize_quest_state
-from settle.quest_projection import notice_results, project_clues
-from settle.world_facts import normalize_world_facts
+from quest.models import import_legacy_quests, normalize_quest_state
+from quest.projection import notice_results, project_clues
+from quest.world_facts import normalize_world_facts
 
 from common import dao as dq
 from store import save_manager as sm
 from world import scene as sc
 from settle import engine_state as est
-from settle.domain_events import EventFactory, EventRequest
+from quest.events import EventFactory, EventRequest
 from settle.mutation_executor import MutationContext
-from settle.triggers import DEFAULT_TRIGGER_REGISTRY, TriggerOutcome
+from quest.registry import DEFAULT_TRIGGER_REGISTRY, TriggerOutcome
 
 
 class SettlementSession:
@@ -52,7 +52,10 @@ class SettlementSession:
         est._MERCHANT_DIRTY = False
         if getattr(self.triggers, "uses_quest_state", False):
             self.world_facts = normalize_world_facts(sm.read_world_facts(self.slot))
-            self.quest_state = normalize_quest_state(sm.read_quest_state(self.slot))
+            raw_quest_state = sm.read_quest_state(self.slot)
+            self.quest_state = normalize_quest_state(raw_quest_state)
+            if raw_quest_state and raw_quest_state != self.quest_state:
+                self.quest_state_dirty = True
             if import_legacy_quests(self.explore, self.quest_state):
                 self.quest_state_dirty = True
                 self.refresh_quest_projection()

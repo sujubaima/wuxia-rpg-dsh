@@ -20,6 +20,7 @@ sys.path.insert(0, SCRIPTS)
 ENGINE = os.path.join(SCRIPTS, "engine.py")
 
 from common import dao as dq
+from engine import OPENING_ERA_TEMPLATE
 from store import save_manager as sm
 from store import turn_state
 from store import quest_drafts
@@ -68,23 +69,24 @@ def char(name, faction="江湖"):
     }
 
 
-def quest_blueprint(quest_id="e2e-ledger", fact="item:e2e_ledger.authenticity@world"):
+def quest_blueprint(reward_prefix="e2e-ledger", fact="item:e2e_ledger.authenticity@world",
+                    name="回归账册"):
     return fact, {
-        "任务ID": quest_id, "版本": 1, "名称": "回归账册",
+        "版本": 1, "名称": name,
         "引子": "一册账册来历可疑。", "隐藏目标": "查清账册真伪",
         "事实定义": [
-            {"事实键": fact, "值类型": "enum", "可选值": ["authentic", "forged"]},
+            {"事实键": fact, "描述": "回归账册的真实真伪", "值类型": "enum", "可选值": ["authentic", "forged"]},
         ],
         "起始节点": ["heard"],
         "节点": [
-            {"节点ID": "heard", "完成条件": {}, "完成摘要": "得到账册线索。",
+            {"节点ID": "heard", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "得到账册线索。",
              "后继节点": ["authentic", "forged"]},
-            {"节点ID": "authentic", "前置节点": ["heard"],
+            {"节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "authentic"},
              "完成摘要": "确认账册为真。", "终局": "解决",
-             "奖励": {"奖励ID": f"{quest_id}:reward", "描述": "体力+5",
+             "奖励": {"奖励ID": f"{reward_prefix}:reward", "描述": "体力+5",
                      "状态变更": [{"类型": "体力", "操作": "加", "值": 5}]}},
-            {"节点ID": "forged", "前置节点": ["heard"],
+            {"节点ID": "forged", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "forged"},
              "完成摘要": "确认账册为伪。", "终局": "关闭"},
         ],
@@ -154,15 +156,52 @@ def main():
               r.get("turn_state") == turn_state.AWAITING_JUDGE
               and turn_state.read_state(slot, tmp)["origin"] == "创建角色",
               f"r={json.dumps(r, ensure_ascii=False)[:200]}")
+        preset_state = sm.read_quest_state(slot, tmp)
+        preset_names = set((preset_state.get("definitions") or {}).keys())
+        check("新档载入全部隐藏预设任务",
+              len(preset_names) == 19
+              and all(runtime.get("lifecycle") == "hidden"
+                      for runtime in (preset_state.get("runtimes") or {}).values()),
+              f"quests={len(preset_names)}")
+        check("隐藏预设不污染玩家线索栏",
+              (sm.read_explore(slot, tmp) or {}).get("任务摘要及进度") == [],
+              f"explore={json.dumps(sm.read_explore(slot, tmp), ensure_ascii=False)[:250]}")
+        region = str((r.get("结算") or [{}])[0].get("落点") or "").split("·", 1)[0]
+        hints = r.get("GM线索提示") or []
+        check("建档未接触由头不暴露隐藏线索",
+              hints == [],
+              f"region={region}, hints={json.dumps(hints, ensure_ascii=False)[:250]}")
         blocked = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         check("开场 judge 前拒绝新 go", blocked.get("状态冲突") == "go_already_committed",
               f"blocked={json.dumps(blocked, ensure_ascii=False)[:200]}")
-        opening = run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿初入江湖。"}, cmd="judge", save_dir=tmp)
+        opening_actions = [
+            {"类型": "事实-写入", "事实": "quest:v3:taihu.hook@world",
+             "值": True, "状态": "verified"},
+            {"类型": "线索-发现", "名称": "太湖风波"},
+        ]
+        rejected = run_engine(slot, {"行为": opening_actions,
+                                     "当前剧情": "沈孤鸿初入江湖。"}, cmd="judge", save_dir=tmp)
+        check("开场 judge 缺固定开场白被打回",
+              "开场白" in str(rejected.get("错误") or "")
+              and rejected.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"rejected={json.dumps(rejected, ensure_ascii=False)[:200]}")
+        opening = run_engine(slot, {"行为": opening_actions,
+                                    "当前剧情": OPENING_ERA_TEMPLATE
+                                    + "\n\n沈孤鸿初入江湖，在城中见招勇告示。"},
+                             cmd="judge", save_dir=tmp)
         check("创建角色开场 judge 接通", opening.get("错误") is None
               and opening.get("界面") == "exploration-ui",
               f"opening={json.dumps(opening, ensure_ascii=False)[:200]}")
         check("开场 judge 后回到 READY", opening.get("turn_state") == turn_state.READY,
               f"opening={json.dumps(opening, ensure_ascii=False)[:200]}")
+        opened_state = sm.read_quest_state(slot, tmp)
+        opened_runtime = (opened_state.get("runtimes") or {}).get("太湖风波") or {}
+        player_clues = (sm.read_explore(slot, tmp) or {}).get("任务摘要及进度") or []
+        check("由头写入后激活预设任务",
+              opened_runtime.get("lifecycle") == "active"
+              and opened_runtime.get("completed_node_ids") == ["entry"]
+              and [item.get("名称") for item in player_clues] == ["太湖风波"],
+              f"runtime={opened_runtime}, clues={player_clues}")
 
         # -------- 样例2：门厅哨兵 --------
         print("== 样例2 门厅哨兵 ==")
@@ -206,6 +245,32 @@ def main():
               bool(go_changes) and all(change in judged_changes for change in go_changes),
               f"go={go_changes}, judge={judged_changes}")
         check("落盘后玩家无玉佩", _has_item(slot, "玉佩", tmp, expected=False))
+        g_npc = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "石敬岩"}]}, save_dir=tmp)
+        npc_contact = ((sm.read_world_facts(slot, tmp) or {}).get("records") or {}) \
+            .get("character:石敬岩.contact@player") or {}
+        check("交谈观察 NPC 目标自动记录接触事实",
+              g_npc.get("错误") is None and npc_contact.get("value") is True,
+              f"g_npc={json.dumps(g_npc, ensure_ascii=False)[:200]}, contact={npc_contact}")
+        j_npc = run_engine(slot, {"行为": [], "当前剧情": "沈孤鸿与石敬岩攀谈数句。"},
+                            cmd="judge", save_dir=tmp)
+        check("NPC 交谈观察 judge 落盘无错", j_npc.get("错误") is None, f"j_npc={j_npc}")
+        surroundings_contact = ((sm.read_world_facts(slot, tmp) or {}).get("records") or {}) \
+            .get("character:周遭.contact@player")
+        check("非 NPC 目标不记录接触事实", surroundings_contact is None,
+              f"contact={surroundings_contact}")
+        g_xu = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "徐鸿儒"}]}, save_dir=tmp)
+        check("接触徐鸿儒触发通天七剑入场提示",
+              any(hint.get("类型") == "隐藏线索" and hint.get("线索") == "通天七剑"
+                  for hint in (g_xu.get("GM线索提示") or [])),
+              f"g_xu={json.dumps(g_xu, ensure_ascii=False)[:300]}")
+        j_xu = run_engine(slot, {"行为": [{"类型": "线索-发现", "名称": "通天七剑"}],
+                                 "当前剧情": "沈孤鸿与白发剑侠徐鸿儒交谈。"},
+                          cmd="judge", save_dir=tmp)
+        xu_runtime = ((sm.read_quest_state(slot, tmp) or {}).get("runtimes") or {}) \
+            .get("通天七剑") or {}
+        check("接触后可发现通天七剑", j_xu.get("错误") is None
+              and xu_runtime.get("lifecycle") == "active",
+              f"j_xu={json.dumps(j_xu, ensure_ascii=False)[:200]}, runtime={xu_runtime}")
         duplicate_judge = run_engine(slot, {"行为": [], "当前剧情": "重复裁定。"}, cmd="judge", save_dir=tmp)
         check("重复 judge 被阶段门禁拒绝", duplicate_judge.get("状态冲突") == "judge_not_expected",
               f"duplicate_judge={json.dumps(duplicate_judge, ensure_ascii=False)[:200]}")
@@ -235,37 +300,37 @@ def main():
         g = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         fact, quest = quest_blueprint()
         second_fact, second_quest = quest_blueprint(
-            "e2e-letter", "item:e2e_letter.authenticity@world"
+            "e2e-letter", "item:e2e_letter.authenticity@world", "回归密信"
         )
         prepared = run_engine(slot, {"任务": [
             {"操作": "创建", "蓝图": quest},
             {"操作": "创建", "蓝图": second_quest},
         ]}, cmd="quest-prepare", save_dir=tmp)
-        prepared_ids = [row.get("任务ID") for row in (prepared.get("任务") or [])]
+        prepared_names = [row.get("名称") for row in (prepared.get("任务") or [])]
         check("quest-prepare 返回同轮任务批次", prepared.get("ok") is True
               and prepared.get("turn_state") == turn_state.AWAITING_JUDGE
-              and prepared_ids == ["e2e-ledger", "e2e-letter"],
+              and prepared_names == ["回归账册", "回归密信"],
               f"prepared={json.dumps(prepared, ensure_ascii=False)[:300]}")
         failed_adoption = run_engine(slot, {"行为": [
-            {"类型": "线索-采用草稿", "任务ID列表": list(reversed(prepared_ids))},
+            {"类型": "线索-采用草稿", "名称列表": list(reversed(prepared_names))},
             {"类型": "不存在类型", "值": 1},
         ], "当前剧情": "本次裁定应整体失败。"}, cmd="judge", save_dir=tmp)
         failed_quests = sm.read_quest_state(slot, tmp).get("definitions", {})
         check("judge 失败保留任务草稿供重试", failed_adoption.get("错误") is not None
               and os.path.exists(quest_drafts.quest_drafts_path(slot, tmp))
-              and "e2e-ledger" not in failed_quests and "e2e-letter" not in failed_quests,
+              and "回归账册" not in failed_quests and "回归密信" not in failed_quests,
               f"failed={json.dumps(failed_adoption, ensure_ascii=False)[:300]}")
         stamina_before = int((sm.read_explore(slot, tmp) or {}).get("体力", 0) or 0)
         adopted = run_engine(slot, {"行为": [
-            {"类型": "线索-采用草稿", "任务ID列表": prepared_ids},
+            {"类型": "线索-采用草稿", "名称列表": prepared_names},
             {"类型": "事实", "事实": fact, "值": "authentic"},
             {"类型": "事实", "事实": second_fact, "值": "authentic"},
         ], "当前剧情": "沈孤鸿查明账册与密信皆为真本。"}, cmd="judge", save_dir=tmp)
         quest_state = sm.read_quest_state(slot, tmp)
         world_facts = sm.read_world_facts(slot, tmp)
         check("judge 原子采用多个任务并归约事实奖励", adopted.get("错误") is None
-              and quest_state.get("runtimes", {}).get("e2e-ledger", {}).get("lifecycle") == "resolved"
-              and quest_state.get("runtimes", {}).get("e2e-letter", {}).get("lifecycle") == "resolved"
+              and quest_state.get("runtimes", {}).get("回归账册", {}).get("lifecycle") == "resolved"
+              and quest_state.get("runtimes", {}).get("回归密信", {}).get("lifecycle") == "resolved"
               and world_facts.get("records", {}).get(fact, {}).get("value") == "authentic"
               and world_facts.get("records", {}).get(second_fact, {}).get("value") == "authentic"
               and int((sm.read_explore(slot, tmp) or {}).get("体力", 0) or 0) == min(100, stamina_before + 10),
@@ -454,7 +519,7 @@ def main():
         print("== 样例6b 读档重置阶段 ==")
         run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         _restore_fact, restore_quest = quest_blueprint(
-            "restore-draft", "item:restore_ledger.authenticity@world")
+            "restore-draft", "item:restore_ledger.authenticity@world", "读档草稿")
         restore_prepared = run_engine(slot, {
             "任务": [{"操作": "创建", "蓝图": restore_quest}],
         }, cmd="quest-prepare", save_dir=tmp)
@@ -470,6 +535,13 @@ def main():
               f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
         check("读档后清理任务草稿",
               not os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)))
+        restored_presets = sm.read_quest_state(slot, tmp)
+        restored_names = set((restored_presets.get("definitions") or {}).keys())
+        check("读档保留全部预设任务状态",
+              preset_names <= restored_names
+              and (restored_presets.get("runtimes") or {}).get("太湖风波", {})
+              .get("lifecycle") == "active",
+              f"restored={len(restored_names)}")
 
         # -------- 样例7：查询类带界面 --------
         print("== 样例7 查询类带界面 ==")

@@ -66,6 +66,7 @@ from common.json_io import (
     read_json,
     warn_json_read,
 )
+from quest.presets import build_initial_preset_state
 
 DEFAULT_SAVE_DIR = dq.SAVE_DIR
 _NPC_SPAWN = None
@@ -806,10 +807,14 @@ def create_slot(character, slot, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DAT
             "当前时间": t,
             "体力": STAMINA_MAX,
         }
+        presets = build_initial_preset_state(data_dir, character, initial_state)
         write_explore(n, initial_state, save_dir, preserve_narrative=False)
+        write_world_facts(n, presets["world_facts"], save_dir)
+        write_quest_state(n, presets["quest_state"], save_dir)
         write_round(n, 0, save_dir)
         return {"slot": n, "当前位置": region, "当前时间": t,
-                "剩余": rounds_until_save(n, save_dir)}
+                "剩余": rounds_until_save(n, save_dir),
+                "GM线索提示": presets["hints"]}
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
         raise

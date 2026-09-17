@@ -19,6 +19,7 @@ SCRIPTS = os.path.dirname(HERE)
 sys.path.insert(0, SCRIPTS)
 
 from combat import battle
+from engine import OPENING_ERA_TEMPLATE
 from common.render_mode import render_mode
 from settle import engine_actions, title_flow
 from settle.markdown_ui import (
@@ -893,7 +894,7 @@ class EngineIntegrationTest(unittest.TestCase):
         assert not created.get("错误"), created.get("错误")
         # 开场 judge：落点为驿站功能场景，要素须含功能NPC+特殊指令
         cls.opening = run_engine(cls.slot, {
-            "行为": [], "当前剧情": "沈孤鸿初入江湖。",
+            "行为": [], "当前剧情": OPENING_ERA_TEMPLATE + "\n\n沈孤鸿初入江湖。",
             "场景要素": [
                 {"主体": "海风", "描写": "咸腥扑面"},
                 {"主体": "驿丞", "描写": "案后整理文书",
@@ -910,7 +911,7 @@ class EngineIntegrationTest(unittest.TestCase):
         created = run_engine(slot, {"行为": [{"类型": "创建角色", "角色": CHAR}]}, "go", self.save_dir)
         self.assertFalse(created.get("错误"))
         opening = run_engine(slot, {
-            "行为": [], "当前剧情": "沈孤鸿初入江湖。",
+            "行为": [], "当前剧情": OPENING_ERA_TEMPLATE + "\n\n沈孤鸿初入江湖。",
             "场景要素": [
                 {"主体": "海风", "描写": "咸腥扑面"},
                 {"主体": "驿丞", "描写": "案后整理文书",
@@ -1151,11 +1152,11 @@ class EngineIntegrationTest(unittest.TestCase):
         title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir)
         self.assertEqual(title.get("界面"), "title-ui")
         self.assertEqual(title.get("标题状态"), "主页")
-        self.assertEqual(title.get("版本"), "0.9.10")
+        self.assertEqual(title.get("版本"), "0.9.11")
         self.assertIn("渲染文本", title)
         dsh_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="dsh")
         self.assertEqual(dsh_title.get("渲染文本"), "")
-        self.assertEqual(dsh_title.get("版本"), "0.9.10")
+        self.assertEqual(dsh_title.get("版本"), "0.9.11")
         web_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="WEB_UI")
         self.assertTrue(web_title.get("渲染文本"))
         self.assertIn("存档列表", web_title)

@@ -101,6 +101,15 @@ class SlotAllocationTest(unittest.TestCase):
         self.assertEqual(created.get("turn_state"), turn_state.AWAITING_JUDGE)
         self.assertTrue(Path(self.save_dir, "slot_5").is_dir())
         self.assertFalse(Path(self.save_dir, "slot_1").exists())
+        quests = sm.read_quest_state(5, self.save_dir)
+        facts = sm.read_world_facts(5, self.save_dir)
+        self.assertEqual(len(quests.get("definitions", {})), 19)
+        self.assertTrue(all(
+            runtime.get("lifecycle") == "hidden"
+            for runtime in quests.get("runtimes", {}).values()
+        ))
+        self.assertIn("player.region@world", facts.get("records", {}))
+        self.assertEqual((sm.read_explore(5, self.save_dir) or {}).get("任务摘要及进度"), [])
 
         refreshed = run_engine(self.save_dir, 0, [{"类型": "开始游戏"}])
         self.assertEqual(refreshed.get("next_slot"), 6)
@@ -184,15 +193,78 @@ class SlotAllocationTest(unittest.TestCase):
         self.assertEqual(names.count("小还丹"), 2)
         self.assertEqual(names.count("补气丸"), 2)
 
+        from engine import OPENING_ERA_TEMPLATE
+
         opened = run_engine(
             self.save_dir,
             retry_slot,
             [],
             command="judge",
-            当前剧情="重试者踏入江湖。",
+            当前剧情=OPENING_ERA_TEMPLATE + "\n\n重试者踏入江湖。",
         )
         self.assertIsNone(opened.get("错误"), opened)
         self.assertEqual(opened.get("turn_state"), turn_state.READY)
+
+    def test_opening_judge_without_narrative_is_rejected_until_rewritten(self):
+        created = run_engine(
+            self.save_dir,
+            1,
+            [{"类型": "创建角色", "角色": character("开卷人")}],
+        )
+        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_JUDGE)
+        slot_root = Path(self.save_dir, "slot_1")
+        before = directory_snapshot(slot_root)
+
+        from engine import OPENING_ERA_TEMPLATE
+
+        bad_narratives = (
+            {}, {"当前剧情": ""}, {"当前剧情": "   "},
+            {"当前剧情": "开卷人负剑出蜀，初入江湖。"},
+        )
+        for bad_payload in bad_narratives:
+            rejected = run_engine(
+                self.save_dir, 1, [], command="judge", **bad_payload
+            )
+            message = str(rejected.get("错误") or "")
+            self.assertIn("开场白", message, rejected)
+            self.assertIn("大明万历年间", message, rejected)
+            self.assertEqual(rejected.get("turn_state"), turn_state.AWAITING_JUDGE)
+            self.assertEqual(directory_snapshot(slot_root), before)
+
+        opening_plot = (
+            OPENING_ERA_TEMPLATE + "\n\n开卷人负剑出蜀，初入江湖。"
+        )
+        accepted = run_engine(
+            self.save_dir,
+            1,
+            [],
+            command="judge",
+            当前剧情=opening_plot,
+        )
+        self.assertIsNone(accepted.get("错误"), accepted)
+        self.assertEqual(accepted.get("turn_state"), turn_state.READY)
+        self.assertEqual(
+            (sm.read_explore(1, self.save_dir) or {}).get("当前剧情"),
+            opening_plot,
+        )
+
+        from engine import OPENING_ERA_SENTENCE
+
+        sentence_only = run_engine(
+            self.save_dir,
+            2,
+            [{"类型": "创建角色", "角色": character("短句客")}],
+        )
+        self.assertEqual(sentence_only.get("turn_state"), turn_state.AWAITING_JUDGE)
+        brief = run_engine(
+            self.save_dir,
+            2,
+            [],
+            command="judge",
+            当前剧情=OPENING_ERA_SENTENCE + "\n\n短句客踏入江湖。",
+        )
+        self.assertIsNone(brief.get("错误"), brief)
+        self.assertEqual(brief.get("turn_state"), turn_state.READY)
 
     def test_atomic_reservation_allows_only_one_concurrent_creator(self):
         env = {**os.environ, "WUXIA_RPG_SAVE_DIR": self.save_dir}
@@ -234,6 +306,8 @@ class SlotAllocationTest(unittest.TestCase):
         self.assertTrue(Path(self.save_dir, "slot_4").is_dir())
 
     def test_deleting_highest_slot_refreshes_next_slot(self):
+        from engine import OPENING_ERA_TEMPLATE
+
         for slot, name in ((2, "低槽位"), (7, "高槽位")):
             created = run_engine(
                 self.save_dir,
@@ -246,7 +320,7 @@ class SlotAllocationTest(unittest.TestCase):
                 slot,
                 [],
                 command="judge",
-                当前剧情=f"{name}初入江湖。",
+                当前剧情=OPENING_ERA_TEMPLATE + f"\n\n{name}初入江湖。",
             )
             self.assertIsNone(opened.get("错误"), opened)
 
@@ -262,9 +336,36 @@ class SlotAllocationTest(unittest.TestCase):
             3,
         )
 
+    def test_delete_bypasses_pending_turn_state(self):
+        from store import turn_state
+
+        # 删除存档是存档管理操作：slot 卡在 AWAITING_JUDGE / AWAITING_BATTLE_START 时也须放行
+        for slot, pending in (
+            (3, turn_state.AWAITING_JUDGE),
+            (4, turn_state.AWAITING_BATTLE_START),
+        ):
+            created = run_engine(
+                self.save_dir,
+                slot,
+                [{"类型": "创建角色", "角色": character("卡状态者")}],
+            )
+            self.assertIsNone(created.get("错误"), created)
+            turn_state.write_state(
+                slot, pending, origin="测试", go_result={}, save_dir=self.save_dir,
+            )
+            deleted = run_engine(self.save_dir, slot, [{"类型": "删除存档"}])
+            self.assertTrue((deleted.get("结算") or [{}])[0].get("ok"), deleted)
+            self.assertFalse(Path(self.save_dir, f"slot_{slot}").exists())
+
     def test_save_manager_cleans_partial_slot_and_does_not_mutate_conflict_payload(self):
         first = character("直接甲")
         sm.create_slot(first, 2, save_dir=self.save_dir)
+        direct_quests = sm.read_quest_state(2, self.save_dir)
+        self.assertEqual(len(direct_quests.get("definitions", {})), 19)
+        self.assertTrue(all(
+            runtime.get("lifecycle") == "hidden"
+            for runtime in direct_quests.get("runtimes", {}).values()
+        ))
 
         second = character("直接乙")
         original = copy.deepcopy(second)
@@ -277,6 +378,17 @@ class SlotAllocationTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "故障注入"):
                 sm.create_slot(character("半成品"), 3, save_dir=self.save_dir)
         self.assertFalse(Path(self.save_dir, "slot_3").exists())
+
+        with tempfile.TemporaryDirectory() as bad_data:
+            quest_dir = Path(bad_data, "quests")
+            quest_dir.mkdir()
+            Path(quest_dir, "损坏预设.json").write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "损坏预设.json"):
+                sm.create_slot(
+                    character("坏预设"), 4,
+                    save_dir=self.save_dir, data_dir=bad_data,
+                )
+        self.assertFalse(Path(self.save_dir, "slot_4").exists())
 
 
 if __name__ == "__main__":

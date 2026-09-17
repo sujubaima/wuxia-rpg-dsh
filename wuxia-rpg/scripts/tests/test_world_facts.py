@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 sys.path.insert(0, SCRIPTS)
 
-from settle.world_facts import (empty_world_facts, register_definition,
+from quest.world_facts import (empty_world_facts, register_definition,
                                 upsert_fact)
 
 
@@ -85,6 +85,21 @@ class WorldFactsTest(unittest.TestCase):
     def test_enum_value_is_validated(self):
         with self.assertRaisesRegex(ValueError, "不符合"):
             upsert_fact(self.store, "item:ledger_001.authenticity@world", "unknown-kind")
+
+    def test_description_enriches_legacy_definition_and_rejects_conflict(self):
+        key = "item:ledger_001.authenticity@world"
+        self.assertEqual(self.store["definitions"][key]["description"], "")
+        changed = register_definition(self.store, {
+            "事实键": key, "描述": "账册的真实真伪",
+            "值类型": "enum", "可选值": ["authentic", "forged"],
+        })
+        self.assertTrue(changed)
+        self.assertEqual(self.store["definitions"][key]["description"], "账册的真实真伪")
+        with self.assertRaisesRegex(ValueError, "现有描述【账册的真实真伪】"):
+            register_definition(self.store, {
+                "事实键": key, "描述": "账册是真是假",
+                "值类型": "enum", "可选值": ["authentic", "forged"],
+            })
 
 
 if __name__ == "__main__":

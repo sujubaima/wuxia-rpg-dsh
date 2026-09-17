@@ -13,33 +13,32 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import engine  # noqa: E402
-from settle.quest_engine import create_quest  # noqa: E402
-from settle.quest_models import empty_quest_state  # noqa: E402
-from settle.world_facts import empty_world_facts  # noqa: E402
+from quest.engine import create_quest  # noqa: E402
+from quest.models import empty_quest_state  # noqa: E402
+from quest.world_facts import empty_world_facts, register_definition, upsert_fact  # noqa: E402
 from store import turn_state  # noqa: E402
 
 
 FACT = "item:prepared-ledger.authenticity@world"
 
 
-def blueprint(task_id="prepared-ledger", fact=FACT, name="备好的账册"):
+def blueprint(fact=FACT, name="备好的账册"):
     return {
-        "任务ID": task_id,
         "版本": 1,
         "名称": name,
         "引子": "旧账册来历不明。",
         "隐藏目标": "查清账册真伪",
         "事实定义": [
-            {"事实键": fact, "值类型": "enum", "可选值": ["authentic", "forged"]},
+            {"事实键": fact, "描述": "账册的真实真伪", "值类型": "enum", "可选值": ["authentic", "forged"]},
         ],
         "起始节点": ["heard"],
         "节点": [
-            {"节点ID": "heard", "完成条件": {}, "完成摘要": "得到账册线索。",
+            {"节点ID": "heard", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "得到账册线索。",
              "后继节点": ["authentic", "forged"]},
-            {"节点ID": "authentic", "前置节点": ["heard"],
+            {"节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "authentic"},
              "完成摘要": "确认账册为真。", "终局": "解决"},
-            {"节点ID": "forged", "前置节点": ["heard"],
+            {"节点ID": "forged", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "forged"},
              "完成摘要": "确认账册为伪。", "终局": "关闭"},
         ],
@@ -64,7 +63,7 @@ class QuestPrepareTest(unittest.TestCase):
             "任务": [
                 {"操作": "创建", "蓝图": blueprint()},
                 {"操作": "创建", "蓝图": blueprint(
-                    "second-ledger", second_fact, "第二本账册"
+                    second_fact, "第二本账册"
                 )},
             ],
         }
@@ -72,18 +71,37 @@ class QuestPrepareTest(unittest.TestCase):
         with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
             result = engine.quest_prepare(payload)
         self.assertTrue(result["ok"], result)
-        self.assertEqual([row["任务ID"] for row in result["任务"]],
-                         ["prepared-ledger", "second-ledger"])
+        self.assertEqual([row["名称"] for row in result["任务"]],
+                         ["备好的账册", "第二本账册"])
         self.assertEqual(result["任务"][0]["节点数"], 3)
         self.assertEqual(result["任务"][0]["终局数"], 2)
+        self.assertEqual(result["任务"][0]["关闭条件节点数"], 0)
         self.assertEqual(result["任务"][0]["引用事实"], [FACT])
         self.assertEqual(result["turn_state"], turn_state.AWAITING_JUDGE)
         write_batch.assert_called_once()
         self.assertEqual(write_batch.call_args.args[:2], (1, 7))
         records = write_batch.call_args.args[2]
-        self.assertEqual([record["quest_id"] for record in records],
-                         ["prepared-ledger", "second-ledger"])
+        self.assertEqual([record["quest_name"] for record in records],
+                         ["备好的账册", "第二本账册"])
         self.assertEqual(records[0]["payload"], blueprint())
+
+    def test_prepare_accepts_blueprint_conflicting_with_current_fact(self):
+        facts = empty_world_facts()
+        register_definition(facts, {
+            "事实键": FACT, "描述": "账册的真实真伪",
+            "值类型": "enum", "可选值": ["authentic", "forged"],
+        })
+        upsert_fact(facts, FACT, "forged")
+        partial = blueprint()
+        partial["节点"] = partial["节点"][:2]
+        partial["节点"][0]["后继节点"] = ["authentic"]
+        storage, phase = self._patch_engine_state(facts=facts)
+        with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare({
+                "槽位": 1, "任务": [{"操作": "创建", "蓝图": partial}],
+            })
+        self.assertTrue(result["ok"], result)
+        write_batch.assert_called_once()
 
     def test_repeated_prepare_writes_latest_complete_batch(self):
         changed = blueprint(name="修正后的账册")
@@ -124,28 +142,40 @@ class QuestPrepareTest(unittest.TestCase):
             self.assertEqual(result["turn_state"], blocked_state)
             write_batch.assert_not_called()
 
+    def test_new_fact_definition_requires_description(self):
+        bad = blueprint()
+        bad["事实定义"][0].pop("描述")
+        storage, phase = self._patch_engine_state()
+        with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare({
+                "槽位": 1, "任务": [{"操作": "创建", "蓝图": bad}],
+            })
+        self.assertFalse(result["ok"])
+        self.assertIn("须提供非空 描述", result["错误"])
+        write_batch.assert_not_called()
+
     def test_extension_reuses_existing_validator(self):
         facts = empty_world_facts()
         quests = empty_quest_state()
         base = {
-            "任务ID": "prepared-follow-up", "版本": 1, "名称": "待续之事",
+            "版本": 1, "名称": "待续之事",
             "引子": "尚有余波。", "隐藏目标": "查清后续",
             "起始节点": ["start"],
             "节点": [
-                {"节点ID": "start", "完成条件": {}, "完成摘要": "开始追查。",
+                {"节点ID": "start", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "开始追查。",
                  "后继节点": ["done", "follow-up"]},
-                {"节点ID": "done", "前置节点": ["start"], "完成条件": {},
+                {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {},
                  "完成摘要": "主事已了。", "终局": "解决"},
-                {"节点ID": "follow-up", "前置节点": ["start"], "完成条件": {},
+                {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {},
                  "完成摘要": "仍有后续。", "扩展点": True},
             ],
         }
         create_quest(facts, quests, base)
         extension = {
-            "任务ID": "prepared-follow-up", "扩展点": "follow-up", "版本": 2,
+            "名称": "待续之事", "扩展点": "follow-up", "版本": 2,
             "起始节点": ["trace"],
             "节点": [
-                {"节点ID": "trace", "前置节点": ["follow-up"], "完成条件": {},
+                {"节点ID": "trace", "关闭条件": None, "关闭描述": None, "前置节点": ["follow-up"], "完成条件": {},
                  "完成摘要": "查清余波。", "终局": "关闭"},
             ],
         }
@@ -176,7 +206,7 @@ class QuestPrepareTest(unittest.TestCase):
             })
             self.assertIn("非预期字段", result["错误"])
 
-    def test_duplicate_task_ids_reject_whole_batch(self):
+    def test_duplicate_clue_names_reject_whole_batch(self):
         storage, phase = self._patch_engine_state()
         with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
             result = engine.quest_prepare({
@@ -187,7 +217,7 @@ class QuestPrepareTest(unittest.TestCase):
                 ],
             })
         self.assertFalse(result["ok"])
-        self.assertIn("重复任务ID", result["错误"])
+        self.assertIn("重复线索名称", result["错误"])
         write_batch.assert_not_called()
 
     def test_successful_judge_clears_round_drafts_even_when_unused(self):
