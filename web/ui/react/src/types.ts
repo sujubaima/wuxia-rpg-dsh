@@ -248,6 +248,8 @@ export interface WaitLine {
   id: number
   summary: string
   detail?: string
+  /** 详情默认展开（流式思考行） */
+  open?: boolean
 }
 
 export interface DisplayState {

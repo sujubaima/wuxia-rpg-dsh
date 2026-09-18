@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchUi } from '../../api'
-import { useGameStore } from '../../store'
+import { useGameStore, useSelectedMember } from '../../store'
 import { esc } from '../../lib/markdown'
 import { Btn, UiTable } from '../ui'
 import { CardShell, DumpJson, LoadingCard } from './CardPanel'
 import type { EngineResult } from '../../types'
 
+/** 使用物品按 目标 结算；其余行为按 角色 配置。与 dsh 版语义一致。 */
+function withRole(a: { 类型: string } & Record<string, any>, role: string | null) {
+  if (!role) return a
+  return { ...a, ...(a.类型 === '使用物品' ? { 目标: role } : { 角色: role }) }
+}
+
 function skillTable(
   list: any[], kind: 'carried' | 'avail', listD: EngineResult, refresh: () => Promise<void>, carriedCount: number,
-  onMastery: (name: string) => void,
+  onMastery: (name: string) => void, role: string | null,
 ) {
   if (!list.length) return <div className="ph">{kind === 'carried' ? '（未携带武学）' : '（无）'}</div>
   const masteryOf: Record<string, any> = {}
@@ -30,9 +36,9 @@ function skillTable(
           <span className="muted" key="e">{esc(w.特效 || w.描述 || '无')}</span>,
           <span key="o">
             {carried ? (
-              <Btn onClick={() => useGameStore.getState().uiOp({ 类型: '配置武学', 操作: '卸', 武学: w.名称 }, { refresh })}>卸下</Btn>
+              <Btn onClick={() => useGameStore.getState().uiOp(withRole({ 类型: '配置武学', 操作: '卸', 武学: w.名称 }, role), { refresh })}>卸下</Btn>
             ) : (
-              <Btn disabled={carriedCount >= 4} onClick={() => useGameStore.getState().uiOp({ 类型: '配置武学', 操作: '装', 武学: w.名称 }, { refresh })}>装上</Btn>
+              <Btn disabled={carriedCount >= 4} onClick={() => useGameStore.getState().uiOp(withRole({ 类型: '配置武学', 操作: '装', 武学: w.名称 }, role), { refresh })}>装上</Btn>
             )}{' '}
             <Btn onClick={() => onMastery(w.名称)}>精进</Btn>
           </span>,
@@ -42,10 +48,12 @@ function skillTable(
   )
 }
 
-function MasteryView({ name, onBack }: { name: string; onBack: () => void }) {
+function MasteryView({ name, role, onBack }: { name: string; role: string | null; onBack: () => void }) {
   const uiOp = useGameStore(s => s.uiOp)
   const [d, setD] = useState<EngineResult | null>(null)
-  const refresh = useCallback(async () => { setD(await fetchUi({ 类型: '武学精进', 武学: name })) }, [name])
+  const refresh = useCallback(async () => {
+    setD(await fetchUi(withRole({ 类型: '武学精进', 武学: name }, role)))
+  }, [name, role])
   useEffect(() => { void refresh() }, [refresh])
   if (!d || d.界面 !== 'mastery-ui') return <CardShell title={'精进 · ' + name}>{d ? <DumpJson data={d} /> : null}<Btn onClick={onBack}>返回武学</Btn></CardShell>
   const td: any = d.十境表数据
@@ -77,28 +85,27 @@ function MasteryView({ name, onBack }: { name: string; onBack: () => void }) {
           </div>
         </div>
       ) : d.十境表 ? <pre className="prebox">{d.十境表 as string}</pre> : null}
-      <Btn primary disabled={td && td.可精进 === false} onClick={() => uiOp({ 类型: '武学精进', 武学: name, 操作: '精进' }, { refresh })}>精进一层</Btn>{' '}
+      <Btn primary disabled={td && td.可精进 === false} onClick={() => uiOp(withRole({ 类型: '武学精进', 武学: name, 操作: '精进' }, role), { refresh })}>精进一层</Btn>{' '}
       <Btn onClick={onBack}>返回武学</Btn>
     </CardShell>
   )
 }
 
 export function WuxueView() {
-  const lastExpl = useGameStore(s => s.lastExpl)
+  const role = useSelectedMember()
   const [d, setD] = useState<EngineResult | null>(null)
   const [listD, setListD] = useState<EngineResult | null>(null)
   const [mastery, setMastery] = useState<string | null>(null)
   const refresh = useCallback(async () => {
-    const cfg = await fetchUi({ 类型: '配置武学' })
-    const mainName = lastExpl?.队伍状态?.[0]?.名称 || null
-    const lst = await fetchUi(mainName ? { 类型: '武学列表', 角色: mainName } : { 类型: '武学列表' })
+    const cfg = await fetchUi(withRole({ 类型: '配置武学' }, role))
+    const lst = await fetchUi(role ? { 类型: '武学列表', 角色: role } : { 类型: '武学列表' })
     setD(cfg); setListD(lst)
-  }, [lastExpl])
+  }, [role])
   const [curXinfa, setCurXinfa] = useState<string | null>(null)
   const uiOp = useGameStore(s => s.uiOp)
   useEffect(() => { void refresh() }, [refresh])
 
-  if (mastery) return <MasteryView name={mastery} onBack={() => { setMastery(null); void refresh() }} />
+  if (mastery) return <MasteryView name={mastery} role={role} onBack={() => { setMastery(null); void refresh() }} />
   if (!d) return <LoadingCard title="武学" />
   const err = d?.错误
   const carried = (d?.携带武学 as any[]) || []
@@ -115,13 +122,13 @@ export function WuxueView() {
               <option value="无">（不运转）</option>
               {xfs.map(n => <option key={n} value={n}>{n}</option>)}
             </select>{' '}
-            <Btn onClick={() => uiOp({ 类型: '配置武学', 运转心法: resolvedXinfa }, { refresh })}>设定</Btn>
+            <Btn onClick={() => uiOp(withRole({ 类型: '配置武学', 运转心法: resolvedXinfa }, role), { refresh })}>设定</Btn>
             {d?.运转心法特效 ? <div className="muted">{d.运转心法特效 as string}</div> : null}
           </div>
           <h4>携带武学（战斗中可用）</h4>
-          {skillTable(carried, 'carried', listD || {}, refresh, carried.length, setMastery)}
+          {skillTable(carried, 'carried', listD || {}, refresh, carried.length, setMastery, role)}
           <h4>可用武学（已习得未携带）</h4>
-          {skillTable(avail, 'avail', listD || {}, refresh, carried.length, setMastery)}
+          {skillTable(avail, 'avail', listD || {}, refresh, carried.length, setMastery, role)}
         </>
       )}
     </CardShell>

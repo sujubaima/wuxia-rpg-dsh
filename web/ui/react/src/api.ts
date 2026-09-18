@@ -58,7 +58,9 @@ export async function closeSession(sessionId: string): Promise<void> {
 export interface StreamHandlers {
   onSession?: (sid: string) => void
   onDelta?: (text: string) => void
+  onThinkDelta?: (text: string) => void
   onTool?: (name: string, args: string) => void
+  onToolResult?: (name: string, text: string) => void
   onState?: (data: EngineResult) => void
   onError?: (msg: string) => void
   onDone?: (err: boolean, result?: string) => void
@@ -128,6 +130,12 @@ function handleBlock(block: string, h: StreamHandlers): void {
       break
     case 'delta':
       h.onDelta?.(data.text || '')
+      break
+    case 'think_delta':
+      h.onThinkDelta?.(data.text || '')
+      break
+    case 'tool_result':
+      h.onToolResult?.(data.name || '', data.text || '')
       break
     case 'tool':
       h.onTool?.(data.name, data.arguments || '')

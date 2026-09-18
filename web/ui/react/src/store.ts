@@ -105,7 +105,7 @@ interface GameState {
   composeExploration: (d: EngineResult) => string
   addGmBlockText: (text: string) => void
   setSteps: (idx: number) => void
-  waitAppend: (text: string, detail?: string) => void
+  waitAppend: (text: string, detail?: string, open?: boolean) => void
   addSysLine: (text: string, opts?: { long?: boolean; cls?: string; replace?: boolean }) => void
   removeToast: (id: number) => void
   openUiModal: (kind: UiModalKind, d: EngineResult) => boolean
@@ -206,6 +206,18 @@ function runChatStream(msg: string, sid: string, get: GetFn, set: SetFn, hidden:
         }
         const newLast: ChatMessage = { ...last, segs }
         set({ messages: [...messages.slice(0, -1), newLast] })
+      },
+      onThinkDelta: (text) => {
+        const lines = get().waitLines
+        const last = lines[lines.length - 1]
+        if (last && last.summary === '— 思考 —') {
+          set({ waitLines: [...lines.slice(0, -1), { ...last, detail: (last.detail || '') + text }] })
+        } else {
+          get().waitAppend('— 思考 —', text, true)
+        }
+      },
+      onToolResult: (name, text) => {
+        get().waitAppend('已完成：' + name, text)
       },
       onTool: (name, args) => {
         const messages = get().messages
@@ -440,8 +452,8 @@ export const useGameStore = create<GameState>((set, get) => {
       }
     },
 
-    waitAppend(text, detail) {
-      const line: WaitLine = { id: waitSeq++, summary: text, detail }
+    waitAppend(text, detail, open) {
+      const line: WaitLine = { id: waitSeq++, summary: text, detail, open }
       set({ waitLines: [...get().waitLines, line] })
     },
 
@@ -843,3 +855,11 @@ export const useGameStore = create<GameState>((set, get) => {
 
 // 供组件按名取 roster 解析
 export { rosterParse }
+
+/** 队伍浮窗点选的角色名；未点选/已离队回退首位成员（主控）。各功能视图共用。 */
+export function useSelectedMember(): string | null {
+  const lastExpl = useGameStore(s => s.lastExpl)
+  const selectedMember = useGameStore(s => s.selectedMember)
+  const names = (lastExpl?.队伍状态 || []).map(m => m.名称 || '')
+  return (selectedMember && names.includes(selectedMember) ? selectedMember : names[0]) || null
+}
