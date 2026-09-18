@@ -107,6 +107,7 @@ function setSteps(idx){
   if(idx>0){
     if(pt)pt.classList.add('working');
     if(panel){panel.classList.add('show');panel.querySelector('.wait-log').innerHTML='';}
+    _thinkLine=null;
     _waitAppend('— 等待 GM 响应 —');
   }else{
     if(pt)pt.classList.remove('working');
@@ -133,6 +134,25 @@ function _waitAppend(text,detail){
     line.textContent=text;
   }
   log.appendChild(line);log.scrollTop=log.scrollHeight;
+}
+/* 流式思考行：think_delta 逐段追加进同一条详情（默认展开），其他事件到达即切段 */
+let _thinkLine=null;
+function _waitThink(delta){
+  const panel=document.getElementById('waitPanel');
+  if(!panel)return;
+  if(!_thinkLine){
+    const line=document.createElement('div');line.className='wait-line';
+    const summary=document.createElement('span');summary.className='wait-summary';
+    summary.textContent='— 思考 —';
+    const det=document.createElement('pre');det.className='wait-detail';
+    det.style.display='block';
+    line.appendChild(summary);line.appendChild(det);
+    panel.querySelector('.wait-log').appendChild(line);
+    _thinkLine=det;
+  }
+  _thinkLine.textContent+=delta;
+  const log=_thinkLine.closest('.wait-log');
+  if(log)log.scrollTop=log.scrollHeight;
 }
 /* B1 章节式入场助理：给节点配 nfp 入场动画递增延时 */
 function makeEnter(delay){

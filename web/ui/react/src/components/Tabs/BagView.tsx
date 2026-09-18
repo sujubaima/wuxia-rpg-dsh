@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchUi } from '../../api'
-import { useGameStore } from '../../store'
+import { useGameStore, useSelectedMember } from '../../store'
 import { effText } from '../../lib/format'
 import { esc } from '../../lib/markdown'
 import { Btn, UiTable } from '../ui'
@@ -15,18 +15,19 @@ const TYPE_SUBS: Record<string, string[]> = {
 
 export function BagView() {
   const uiOp = useGameStore(s => s.uiOp)
+  const role = useSelectedMember()
   const [type, setType] = useState('')
   const [sub, setSub] = useState('')
   const [bag, setBag] = useState<EngineResult | null>(null)
   const [carry, setCarry] = useState<EngineResult | null>(null)
 
   const refresh = useCallback(async () => {
-    const a: any = { 类型: '查看背包' }
+    const a: any = { 类型: '查看背包', ...(role ? { 角色: role } : {}) }
     if (type) a.筛选类型 = type
     if (type && sub) a.筛选子类型 = sub
     setBag(await fetchUi(a))
-    setCarry(await fetchUi({ 类型: '配置物品' }))
-  }, [type, sub])
+    setCarry(await fetchUi({ 类型: '配置物品', ...(role ? { 角色: role } : {}) }))
+  }, [type, sub, role])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -61,7 +62,7 @@ export function BagView() {
               <b key="n" dangerouslySetInnerHTML={{ __html: esc(it.名称) }} />,
               '×' + (it.数量 ?? 1), it.类型 || '', it.子类型 || '', it.品名 || '',
               <span className="muted" key="e">{esc(effText(it.使用效果))}</span>,
-              usable ? <Btn key="u" onClick={() => uiOp({ 类型: '使用物品', 物品: it.名称 }, { refresh })}>使用</Btn> : null,
+              usable ? <Btn key="u" onClick={() => uiOp(role ? { 类型: '使用物品', 物品: it.名称, 目标: role } : { 类型: '使用物品', 物品: it.名称 }, { refresh })}>使用</Btn> : null,
             ]
           })}
         />
@@ -75,7 +76,7 @@ export function BagView() {
             headers={['携带中', '数量', '']}
             rows={carryItems.map(it => [
               it.名称 || it, '×' + (it.数量 ?? 1),
-              <Btn key="x" onClick={() => uiOp({ 类型: '配置物品', 操作: '卸', 物品: it.名称 || it }, { refresh })}>卸下</Btn>,
+              <Btn key="x" onClick={() => uiOp(role ? { 类型: '配置物品', 操作: '卸', 物品: it.名称 || it, 角色: role } : { 类型: '配置物品', 操作: '卸', 物品: it.名称 || it }, { refresh })}>卸下</Btn>,
             ])}
           />
           {swapItems.length > 0 && (
@@ -85,7 +86,7 @@ export function BagView() {
                 headers={['名称', '数量', '']}
                 rows={swapItems.map(it => [
                   it.名称 || it, '×' + (it.数量 ?? 1),
-                  <Btn key="a" onClick={() => uiOp({ 类型: '配置物品', 操作: '装', 物品: it.名称 || it }, { refresh })}>装上</Btn>,
+                  <Btn key="a" onClick={() => uiOp(role ? { 类型: '配置物品', 操作: '装', 物品: it.名称 || it, 角色: role } : { 类型: '配置物品', 操作: '装', 物品: it.名称 || it }, { refresh })}>装上</Btn>,
                 ])}
               />
             </>

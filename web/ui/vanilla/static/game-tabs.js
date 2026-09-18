@@ -140,6 +140,15 @@ function dumpJson(c,d){c.appendChild(el('pre','jsonout',JSON.stringify(d,null,2)
 async function fetchUi(action,dflt){
   try{return await engineGo([action]);}catch(e){return {错误:String(e)};}
 }
+/* 右栏点选的队友名：未点选/已离队回退首位成员（主控）。功能面板共用。 */
+function selMemberName(){
+  const names=(lastExpl&&lastExpl.队伍状态||[]).map(m=>m.名称);
+  return (selectedMember&&names.includes(selectedMember)?selectedMember:names[0])||null;
+}
+/* 使用物品按 目标 结算（从目标物品栏扣除并生效）；其余行为按 角色 配置。 */
+function withRole(a,role){
+  return role?Object.assign({},a,a.类型==='使用物品'?{目标:role}:{角色:role}):a;
+}
 
 /* ---------- 物品（bag-ui + 战斗携带 item-ui） ---------- */
 /* 一级类型→二级子类型映射（取自 assets/data/items；无子类型的类型列空数组）。
@@ -151,6 +160,7 @@ const TYPE_SUBS={
 };
 async function loadBag(){
   const c=cardShell('物品','');
+  const role=selMemberName();
   const bar=el('div');bar.style.margin='0 0 8px';
   const sel=el('select','uibtn');
   for(const t of ['','武器','消耗品','护甲','冠巾','饰品']){
@@ -172,13 +182,13 @@ async function loadBag(){
   const h4=el('h4',null,'战斗携带（≤4类，战斗内可用消耗品）');
   const holder2=el('div');
   async function queryBag(){
-    const a={"类型":"查看背包"};
+    const a=withRole({"类型":"查看背包"},role);
     if(sel.value)a.筛选类型=sel.value;
     if(sel.value&&sub.value)a.筛选子类型=sub.value;
     const d=await fetchUi(a);
     holder1.innerHTML='';
     if(d.错误){dumpJson(holder1,d);return;}
-    renderBagRows(holder1,d,refresh);
+    renderBagRows(holder1,d,refresh,role);
   }
   async function autoQuery(){
     if(cardBusy)return;
@@ -186,7 +196,7 @@ async function loadBag(){
     try{await queryBag();}finally{cardBusy=false;setCardButtons(true);}
   }
   async function queryCarry(){
-    renderCarryInto(holder2,await fetchUi({"类型":"配置物品"}),refresh);
+    renderCarryInto(holder2,await fetchUi(withRole({"类型":"配置物品"},role)),refresh,role);
   }
   async function refresh(){await queryBag();await queryCarry();}
   const reBtn=uiBtn('查询');
@@ -196,13 +206,13 @@ async function loadBag(){
   await refresh();
 }
 function _effText(e){return e==null?'':(typeof e==='string'?e:JSON.stringify(e));}
-function renderBagRows(holder,d,refresh){
+function renderBagRows(holder,d,refresh,role){
   const rows=[];
   for(const it of (d.物品列表||[])){
     const usable=/世界|通用/.test(it.适用场合||'');
     const ops=el('span');
     if(usable){const b=uiBtn('使用');
-      b.onclick=()=>uiOp({"类型":"使用物品","物品":it.名称},{refresh});
+      b.onclick=()=>uiOp(withRole({"类型":"使用物品","物品":it.名称},role),{refresh});
       ops.appendChild(b);}
     rows.push([`<b>${esc(it.名称)}</b>`,'×'+(it.数量??1),it.类型||'',it.子类型||'',
       it.品名||'',`<span class="muted">${esc(_effText(it.使用效果))}</span>`,ops]);
@@ -210,13 +220,13 @@ function renderBagRows(holder,d,refresh){
   holder.appendChild(rows.length?uiTable(['名称','数量','类型','子类型','品级','效果','操作'],rows)
     :el('div','ph','（空）'));
 }
-function renderCarryInto(holder,p,refresh){
+function renderCarryInto(holder,p,refresh,role){
   holder.innerHTML='';
   if(!p||p.界面!=='item-ui'){holder.appendChild(el('div','ph','（查询战斗携带失败或为空）'));return;}
   const rows=[];
   for(const it of (p.携带道具||[])){
     const b=uiBtn('卸下');
-    b.onclick=()=>uiOp({"类型":"配置物品","操作":"卸","物品":it.名称||it},{refresh});
+    b.onclick=()=>uiOp(withRole({"类型":"配置物品","操作":"卸","物品":it.名称||it},role),{refresh});
     rows.push([it.名称||it,'×'+(it.数量??1),b]);
   }
   holder.appendChild(rows.length?uiTable(['携带中','数量',''],rows):el('div','ph','（未携带）'));
@@ -225,7 +235,7 @@ function renderCarryInto(holder,p,refresh){
     const rows2=[];
     for(const it of p.可换道具){
       const b=uiBtn('装上');
-      b.onclick=()=>uiOp({"类型":"配置物品","操作":"装","物品":it.名称||it},{refresh});
+      b.onclick=()=>uiOp(withRole({"类型":"配置物品","操作":"装","物品":it.名称||it},role),{refresh});
       rows2.push([it.名称||it,'×'+(it.数量??1),b]);
     }
     holder.appendChild(uiTable(['名称','数量',''],rows2));
@@ -238,16 +248,17 @@ const WEAPON_SUBS={'刀':1,'剑':1,'奇门':1,'搏击':1,'暗器':1,'长兵':1};
 function slotOfSub(sub){return {护甲:'护甲',饰品:'饰品',冠巾:'冠巾'}[sub]||null;}
 async function loadEquip(){
   const c=cardShell('装备','');
+  const role=selMemberName();
   const holder=el('div');c.appendChild(holder);
   async function refresh(){
-    const d=await fetchUi({"类型":"配置装备"});
+    const d=await fetchUi(withRole({"类型":"配置装备"},role));
     holder.innerHTML='';
     if(d.错误){dumpJson(holder,d);return;}
-    renderEquipInto(holder,d,refresh);
+    renderEquipInto(holder,d,refresh,role);
   }
   await refresh();
 }
-function renderEquipInto(holder,d,refresh){
+function renderEquipInto(holder,d,refresh,role){
   const row=el('div','slotrow');
   for(const s of EQUIP_SLOTS){
     const sc=el('div','slotcard');
@@ -255,7 +266,7 @@ function renderEquipInto(holder,d,refresh){
     const cur=(d.当前装备||{})[s];
     sc.appendChild(el('div','eq',cur||'（空）'));
     if(cur){const b=uiBtn('卸下');
-      b.onclick=()=>uiOp({"类型":"配置装备","操作":"脱","槽位":s},{refresh});
+      b.onclick=()=>uiOp(withRole({"类型":"配置装备","操作":"脱","槽位":s},role),{refresh});
       sc.appendChild(b);}
     row.appendChild(sc);
   }
@@ -270,13 +281,13 @@ function renderEquipInto(holder,d,refresh){
     if(isWeapon){
       for(const ws of ['武器1','武器2']){
         const b=uiBtn('装到'+ws);
-        b.onclick=()=>uiOp({"类型":"配置装备","操作":"穿","槽位":ws,"物品":it.名称},{refresh});
+        b.onclick=()=>uiOp(withRole({"类型":"配置装备","操作":"穿","槽位":ws,"物品":it.名称},role),{refresh});
         ops.appendChild(b);ops.appendChild(document.createTextNode(' '));
       }
     }else{
       const sl=it.类型&&EQUIP_SLOTS.includes(it.类型)?it.类型:slotOfSub(it.子类型);
       const b=uiBtn('穿上');
-      if(sl)b.onclick=()=>uiOp({"类型":"配置装备","操作":"穿","槽位":sl,"物品":it.名称},{refresh});
+      if(sl)b.onclick=()=>uiOp(withRole({"类型":"配置装备","操作":"穿","槽位":sl,"物品":it.名称},role),{refresh});
       else b.disabled=true;
       ops.appendChild(b);
     }
@@ -288,19 +299,18 @@ function renderEquipInto(holder,d,refresh){
 /* ---------- 武学（wuxue-ui + wuxue-list-ui + mastery-ui） ---------- */
 async function loadWuxue(){
   const c=cardShell('武学','');
+  const role=selMemberName();
   const holder=el('div');c.appendChild(holder);
   async function refresh(){
-    const d=await fetchUi({"类型":"配置武学"});
-    const mainName=(lastExpl&&lastExpl.队伍状态&&lastExpl.队伍状态[0]
-      &&lastExpl.队伍状态[0].名称)||null;
-    const listD=await fetchUi(mainName?{"类型":"武学列表","角色":mainName}:{"类型":"武学列表"});
+    const d=await fetchUi(withRole({"类型":"配置武学"},role));
+    const listD=await fetchUi(role?{"类型":"武学列表","角色":role}:{"类型":"武学列表"});
     holder.innerHTML='';
     if(d.错误){dumpJson(holder,d);return;}
-    renderWuxueInto(holder,d,listD,refresh);
+    renderWuxueInto(holder,d,listD,refresh,role);
   }
   await refresh();
 }
-function renderWuxueInto(holder,d,listD,refresh){
+function renderWuxueInto(holder,d,listD,refresh,role){
   const xh=el('div');
   xh.appendChild(el('span','muted','运转心法：'));
   const xfs=(listD.心法||[]).map(x=>x.名称);
@@ -309,33 +319,33 @@ function renderWuxueInto(holder,d,listD,refresh){
   for(const n of xfs){const o=el('option');o.value=n;o.textContent=n;sel.appendChild(o);}
   sel.value=d.运转心法||'无';
   const setBtn=uiBtn('设定');
-  setBtn.onclick=()=>uiOp({"类型":"配置武学","运转心法":sel.value},{refresh});
+  setBtn.onclick=()=>uiOp(withRole({"类型":"配置武学","运转心法":sel.value},role),{refresh});
   xh.appendChild(sel);xh.appendChild(document.createTextNode(' '));xh.appendChild(setBtn);
   if(d.运转心法特效)xh.appendChild(el('div','muted',d.运转心法特效));
   holder.appendChild(xh);
   holder.appendChild(el('h4',null,'携带武学（战斗中可用）'));
-  holder.appendChild(skillTable(d.携带武学||[],'carried',listD,refresh,(d.携带武学||[]).length));
+  holder.appendChild(skillTable(d.携带武学||[],'carried',listD,refresh,(d.携带武学||[]).length,role));
   holder.appendChild(el('h4',null,'可用武学（已习得未携带）'));
-  holder.appendChild(skillTable(d.可用武学||[],'avail',listD,refresh,(d.携带武学||[]).length));
+  holder.appendChild(skillTable(d.可用武学||[],'avail',listD,refresh,(d.携带武学||[]).length,role));
 }
-function skillTable(list,kind,listD,refresh,carriedCount){
+function skillTable(list,kind,listD,refresh,carriedCount,role){
   if(!list.length)return el('div','ph',kind==='carried'?'（未携带武学）':'（无）');
   const rows=[];
   const masteryOf={};for(const grp of ['主动武学','心法'])for(const e of (listD[grp]||[]))masteryOf[e.名称]=e;
   for(const w of list){
     const ops=el('span');
     if(kind==='carried'){
-      const b=uiBtn('卸下');b.onclick=()=>uiOp({"类型":"配置武学","操作":"卸","武学":w.名称},{refresh});
+      const b=uiBtn('卸下');b.onclick=()=>uiOp(withRole({"类型":"配置武学","操作":"卸","武学":w.名称},role),{refresh});
       ops.appendChild(b);
     }else{
       const b=uiBtn('装上');
       if(carriedCount>=4)b.disabled=true;
-      b.onclick=()=>uiOp({"类型":"配置武学","操作":"装","武学":w.名称},{refresh});
+      b.onclick=()=>uiOp(withRole({"类型":"配置武学","操作":"装","武学":w.名称},role),{refresh});
       ops.appendChild(b);
     }
     ops.appendChild(document.createTextNode(' '));
     const m=uiBtn('精进');
-    m.onclick=()=>openMastery(w.名称);
+    m.onclick=()=>openMastery(w.名称,role);
     ops.appendChild(m);
     const meta=masteryOf[w.名称]||{};
     const lv=meta.等级!=null?meta.等级:w.等级;
@@ -345,11 +355,11 @@ function skillTable(list,kind,listD,refresh,carriedCount){
   }
   return uiTable(['名称','境界','品级','威力','内力','冷却','特效','操作'],rows);
 }
-async function openMastery(name){
+async function openMastery(name,role){
   const c=cardShell('精进 · '+name,'');
   const holder=el('div');c.appendChild(holder);
   async function refresh(){
-    const d=await fetchUi({"类型":"武学精进","武学":name});
+    const d=await fetchUi(withRole({"类型":"武学精进","武学":name},role));
     holder.innerHTML='';
     if(d.界面!=='mastery-ui'){dumpJson(holder,d);return;}
     holder.appendChild(el('div','ph',`当前 ${d.等级}境 ｜ 经验值 ${d.经验值}`));
@@ -358,7 +368,7 @@ async function openMastery(name){
     else if(d.十境表)holder.appendChild(el('pre','prebox',d.十境表));
     const b=uiBtn('精进一层','primary');
     if(td&&td.可精进===false)b.disabled=true;
-    b.onclick=()=>uiOp({"类型":"武学精进","武学":name,"操作":"精进"},{narrate:'消耗经验精进…',refresh});
+    b.onclick=()=>uiOp(withRole({"类型":"武学精进","武学":name,"操作":"精进"},role),{narrate:'消耗经验精进…',refresh});
     holder.appendChild(b);
   }
   await refresh();
@@ -558,11 +568,8 @@ async function loadClue(){
 
 /* ---------- 角色（character-ui，只读） ---------- */
 async function loadChar(){
-  /* engine 无「主控」代号，须取当前档主控真名——探索态 队伍状态[0] 即玩家（玩家恒居首）。
-     selectedMember 为右栏点选的队友名，缺省/已离队则回退主角。 */
-  const names=(lastExpl&&lastExpl.队伍状态||[]).map(m=>m.名称);
-  if(selectedMember&&!names.includes(selectedMember))selectedMember=null;
-  const name=selectedMember||names[0]||null;
+  /* engine 无「主控」代号，须取当前档主控真名——探索态 队伍状态[0] 即玩家（玩家恒居首）。 */
+  const name=selMemberName();
   if(!name){
     const c=cardShell('角色','');
     const b=uiBtn('重试');b.onclick=loadChar;c.appendChild(b);return;

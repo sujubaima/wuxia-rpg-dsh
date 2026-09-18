@@ -33,7 +33,7 @@ LLM_BACKEND=claude python3 web/server.py  # claude 后端
 
 Web 和 DSH 共用 `wuxia-rpg/scripts/engine_service.py` 实现，但默认各自启动独立进程。工具定义来自 `wuxia-rpg/tools.json`，全部经 `EngineGateway` 串行分发。
 
-`agent` 后端只注册八个 `wuxia_*` 工具和受限的 `wuxia_read_reference`，不提供通用 `read/write/bash/list`。`claude` 后端仍由 `CLAUDE_PERMISSION_MODE` 控制 Claude Code 权限。
+`agent` 后端只注册九个 `wuxia_*` 工具和受限的 `wuxia_read_reference`，不提供通用 `read/write/bash/list`。`claude` 后端仍由 `CLAUDE_PERMISSION_MODE` 控制 Claude Code 权限。
 
 ## 会话
 

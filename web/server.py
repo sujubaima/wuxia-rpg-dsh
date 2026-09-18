@@ -39,6 +39,7 @@ from resource_limits import (
     SlidingWindowLimiter,
     read_json_object,
 )
+from log import log, log_exc
 from wuxia_tools import WEB_SKILL_USAGE_NOTE, build_wuxia_registry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # cc-game 根
@@ -189,7 +190,7 @@ def _load_config():
 
     环境变量优先 (已设置则保留), config.json 仅补缺。
       backend_mode  -> LLM_BACKEND (顶层, llm | claude)
-      llm 段        -> AGENT_API_BASE / AGENT_API_TOKEN / AGENT_MODEL (llm 后端)
+      llm 段        -> AGENT_API_BASE / AGENT_API_TOKEN / AGENT_MODEL / AGENT_REASONING_EFFORT (llm 后端)
       claude 段     -> CLAUDE_COMMAND / CLAUDE_PERMISSION_MODE (claude 后端)
       server 段     -> HOST / PORT / WUXIA_FRONTEND 及 WUXIA_WEB_* 资源限制
       paths 段      -> WUXIA_RPG_SAVE_DIR (存档根目录) / WUXIA_RPG_SKILL_DIR (技能包路径)
@@ -211,7 +212,8 @@ def _load_config():
     llm = cfg.get("llm", {})
     for env_key, cfg_key in (("AGENT_API_BASE", "base_url"),
                              ("AGENT_API_TOKEN", "api_token"),
-                             ("AGENT_MODEL", "model")):
+                             ("AGENT_MODEL", "model"),
+                             ("AGENT_REASONING_EFFORT", "reasoning_effort")):
         val = llm.get(cfg_key)
         if val and env_key not in os.environ:
             os.environ[env_key] = str(val)
@@ -356,7 +358,8 @@ def _create_agent():
     registry = build_wuxia_registry(_engine_client, _tools_manifest, SKILL_DIR)
     return Agent(
         tools=registry, skill_dirs=[SKILL_DIR], system_prompt=AGENT_SYS,
-        skill_usage_note=WEB_SKILL_USAGE_NOTE)
+        skill_usage_note=WEB_SKILL_USAGE_NOTE,
+        reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "medium"))
 
 
 class ResourceLimitedHTTPServer(ThreadingHTTPServer):
@@ -481,7 +484,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "method 仅允许 go/judge"}, 400)
             return
         payload = {k: v for k, v in payload.items() if k != "method"}
+        t0 = time.monotonic()
         result, err = _call_engine_service(payload, method=method)
+        log("engine", op=method, slot=payload.get("槽位"),
+            ms=int((time.monotonic() - t0) * 1000), err=err)
         if err:
             self._json({"error": err}, 500)
         else:
@@ -495,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
 
         source = self.client_address[0]
         if not _chat_limiter.allow(source, LIMITS["chat_rate_per_minute"]):
+            log("chat-reject", reason="rate")
             self._json({"error": "聊天请求过于频繁，请稍后重试"}, 429)
             return
 
@@ -517,6 +524,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(sid) > 128:
             self._json({"error": "session_id 过长"}, 400)
             return
+        log("chat-start", sid=sid[:8] or "(new)", chars=len(message),
+            preview=message[:80])
         if not sid:
             sid = str(uuid.uuid4())
 
@@ -528,22 +537,27 @@ class Handler(BaseHTTPRequestHandler):
             new_session = not _is_known(sid)
         if new_session and not _session_create_limiter.allow(
                 source, LIMITS["session_create_rate_per_minute"]):
+            log("chat-reject", reason="create-rate")
             self._json({"error": "新建会话过于频繁，请稍后重试"}, 429)
             return
         if _is_llm_backend():
             try:
                 agent, create = _agent_sessions.checkout(sid, _create_agent)
             except SessionBusyError as exc:
+                log("chat-reject", sid=sid[:8], reason="busy")
                 self._json({"error": str(exc)}, 409)
                 return
             except SessionCapacityError as exc:
+                log("chat-reject", sid=sid[:8], reason="capacity")
                 self._json({"error": str(exc)}, 503)
                 return
             except Exception as exc:  # noqa: BLE001
+                log_exc("chat-agent-init-error", sid=sid[:8])
                 self._json({"error": f"agent 后端初始化失败: {exc}"}, 500)
                 return
         else:
             if not _claim_claude_session(sid):
+                log("chat-reject", sid=sid[:8], reason="claude-busy")
                 self._json({"error": "会话正在处理上一条请求"}, 409)
                 return
             claude_claimed = True
@@ -616,33 +630,56 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "closed": agent_closed or known_closed})
 
     def _run_agent(self, agent, sid, message, send):
-        """agent-lite 后端: 复刻 Agent.run 主循环，途中推送工具徽标。
+        """agent-lite 后端: 复刻 Agent.run 主循环，途中推送思考、工具徽标与工具返回。
 
         每轮 step 后无 tool_calls 即为最终回复——agent 只回终稿，
         无需 claude 后端的过渡语拦截。
         """
+        tag = sid[:8]
+        t0 = time.monotonic()
+        # 思考过程流式透传到等待面板；回合结束摘除回调（agent 回池复用）
+        agent.on_reasoning = lambda text: send("think_delta", {"text": text})
         try:
             agent.session.add_user(message)
             for _ in range(agent.max_iterations):
+                before = len(agent.session.messages)
+                step_t = time.monotonic()
                 msg = agent.step()
+                log("agent-step", sid=tag,
+                    step_ms=int((time.monotonic() - step_t) * 1000),
+                    tools=len(msg.get("tool_calls") or []))
                 for tc in msg.get("tool_calls") or []:
                     fn = tc.get("function") or {}
                     send("tool", {"name": fn.get("name"), "arguments": fn.get("arguments") or ""})
+                # 本步工具返回：step 前的消息数之后新增的 role=tool 消息
+                for tm in agent.session.messages[before:]:
+                    if tm.get("role") != "tool":
+                        continue
+                    result_text = str(tm.get("content") or "")
+                    send("tool_result", {"name": tm.get("name"), "text": result_text[:2000]})
+                    log("tool-result", sid=tag, name=tm.get("name"),
+                        result=result_text[:400])
                 if not msg.get("tool_calls"):
                     send("delta", {"text": msg.get("content") or ""})
                     st = _harvest_engine_state(agent)
                     if st is not None:
                         send("state", st)
                     send("done", {"error": False, "session_id": sid})
+                    log("chat-done", sid=tag, ms=int((time.monotonic() - t0) * 1000))
                     return
             send("delta", {"text": "(已达到最大工具调用轮数，请换个方式描述或拆分任务。)"})
             st = _harvest_engine_state(agent)
             if st is not None:
                 send("state", st)
             send("done", {"error": False, "session_id": sid})
+            log("chat-done", sid=tag, ms=int((time.monotonic() - t0) * 1000),
+                max_iterations=True)
         except Exception as e:  # noqa: BLE001
+            log_exc("chat-error", sid=tag, error=str(e))
             send("error", {"message": f"agent 后端执行出错: {e}"})
             send("done", {"error": True})
+        finally:
+            agent.on_reasoning = None
 
     def _run_claude(self, sid, message, create, send):
         cmd = [
@@ -905,11 +942,15 @@ def main():
               f"engine={LIMITS['engine_body_max_bytes']}B depth={LIMITS['json_max_depth']}")
         if _is_llm_backend():
             print(f"agent 模型服务: AGENT_API_BASE={os.environ.get('AGENT_API_BASE', '(未设置)')} "
-                  f"AGENT_MODEL={os.environ.get('AGENT_MODEL', '(未设置)')}")
+                  f"AGENT_MODEL={os.environ.get('AGENT_MODEL', '(未设置)')} "
+                  f"reasoning_effort={os.environ.get('AGENT_REASONING_EFFORT', 'medium')}")
         else:
             print(f"claude 命令: {CLAUDE_COMMAND}  权限模式: {PERMISSION_MODE}  "
                   f"(config.json claude.command / permission_mode 或对应环境变量)")
         print("Ctrl+C 退出")
+        log("server-start", backend=BACKEND, port=port,
+            engine_service=str(_engine_client.service_url),
+            reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "medium"))
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n已退出。")

@@ -3,7 +3,7 @@ import { useGameStore } from '../../store'
 import type { WaitLine } from '../../types'
 
 function WaitLineRow({ l }: { l: WaitLine }) {
-  const [show, setShow] = useState(false)
+  const [show, setShow] = useState(Boolean(l.open))
   if (l.detail) {
     return (
       <div className="wait-line">

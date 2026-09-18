@@ -1,18 +1,14 @@
 import { useEffect, useState } from 'react'
 import { fetchUi } from '../../api'
-import { useGameStore } from '../../store'
+import { useSelectedMember } from '../../store'
 import { kvGrid, Btn, UiTable } from '../ui'
 import { CardShell, DumpJson, LoadingCard } from './CardPanel'
 import type { EngineResult } from '../../types'
 
 export function CharView() {
-  const lastExpl = useGameStore(s => s.lastExpl)
-  const selectedMember = useGameStore(s => s.selectedMember)
+  const resolved = useSelectedMember()
   const [d, setD] = useState<EngineResult | null>(null)
   const [name, setName] = useState<string | null>(null)
-
-  const names = (lastExpl?.队伍状态 || []).map(m => m.名称 || '')
-  const resolved = (selectedMember && names.includes(selectedMember) ? selectedMember : names[0]) || null
 
   useEffect(() => {
     if (!resolved) { setD(null); setName(null); return }
