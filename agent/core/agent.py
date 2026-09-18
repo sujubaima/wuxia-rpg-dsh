@@ -23,10 +23,14 @@ DEFAULT_SKILL_USAGE_NOTE = (
 class Agent:
     def __init__(self, client=None, tools=None, skills=None,
                  system_prompt=None, max_iterations=100, max_context_tokens=1_000_000,
-                 skill_dirs=None, reasoning_effort="high", skill_usage_note=None):
+                 skill_dirs=None, reasoning_effort="high", skill_usage_note=None,
+                 on_reasoning=None, on_content=None):
         self.client = client or ChatClient()
         # 主循环推理强度 (压缩摘要的 _summarize 调用不带, 省 token)
         self.reasoning_effort = reasoning_effort
+        # 流式回调: 推理时逐段透出思考/正文 (None 时非流式)
+        self.on_reasoning = on_reasoning
+        self.on_content = on_content
         self.tools = tools or ToolRegistry()
         self.skills = skills or SkillRegistry()
 
@@ -120,6 +124,8 @@ class Agent:
                     messages=self.session.get_messages(),
                     tools=self.tools.getSchemas(),
                     reasoning_effort=self.reasoning_effort,
+                    on_reasoning=self.on_reasoning,
+                    on_content=self.on_content,
                 )
                 break
             except ContextOverflowError as err:
