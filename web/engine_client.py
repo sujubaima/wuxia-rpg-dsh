@@ -8,6 +8,8 @@ import sys
 import threading
 import urllib.error
 import urllib.parse
+
+from log import log as _log
 import urllib.request
 import uuid
 
@@ -70,6 +72,7 @@ class EngineClient:
                 line = raw.rstrip()
                 if line:
                     print(f"[engine-service] {line}", file=sys.stderr)
+                    _log("engine-stderr", line=line)
 
         threading.Thread(target=pump_stdout, daemon=True).start()
         threading.Thread(target=pump_stderr, daemon=True).start()
