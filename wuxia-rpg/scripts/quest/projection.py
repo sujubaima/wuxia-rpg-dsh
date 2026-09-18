@@ -4,7 +4,7 @@
 from collections import OrderedDict
 
 
-_TERMINAL = {"resolved", "failed", "closed"}
+_TERMINAL = {"ended"}
 
 
 def project_clues(quest_state):
@@ -47,17 +47,20 @@ def notice_results(notices):
         if not quest_name:
             continue
         kind = notice.get("kind") or "updated"
-        if kind not in ("discovered", "updated"):
+        if kind not in ("discovered", "updated", "ended"):
             continue
         group = grouped.setdefault(quest_name, {
             "name": quest_name,
             "kind": kind,
         })
+        # 同轮多通知归并：已发现 > 已结束 > 已更新
         if kind == "discovered":
             group["kind"] = "discovered"
+        elif kind == "ended" and group["kind"] != "discovered":
+            group["kind"] = "ended"
     results = []
     for group in grouped.values():
-        suffix = "已发现" if group["kind"] == "discovered" else "已更新"
+        suffix = {"discovered": "已发现", "ended": "已结束"}.get(group["kind"], "已更新")
         text = f"线索【{group['name']}】{suffix}"
         results.append({"ok": True, "msg": text, "变更": text})
     return results

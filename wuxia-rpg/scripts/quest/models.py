@@ -4,8 +4,12 @@
 import copy
 
 
-VERSION = 3
-TERMINAL_LIFECYCLES = {"resolved", "failed", "closed"}
+VERSION = 4
+TERMINAL_LIFECYCLES = {"ended"}
+# 旧三值终局（不区分好坏结局，仅作记录标签）统一归一为布尔终局
+_LEGACY_OUTCOMES = {"解决": True, "失败": True, "关闭": True,
+                    "resolved": True, "failed": True, "closed": True}
+_LEGACY_LIFECYCLES = {"resolved": "ended", "failed": "ended", "closed": "ended"}
 
 
 def empty_quest_state():
@@ -24,6 +28,9 @@ def _normalize_stored_definition(raw_definition, name):
                 continue
             node.setdefault("close_condition", None)
             node.setdefault("close_summary", None)
+            if "outcome" in node:  # v3 迁移：三值终局归一为布尔
+                node["terminal"] = bool(node.pop("outcome"))
+            node.setdefault("terminal", False)
     return definition
 
 
@@ -31,6 +38,9 @@ def _normalize_stored_runtime(raw_runtime):
     runtime = copy.deepcopy(raw_runtime) if isinstance(raw_runtime, dict) else {}
     runtime.pop("quest_id", None)
     runtime.pop("任务ID", None)
+    lifecycle = runtime.get("lifecycle")
+    if lifecycle in _LEGACY_LIFECYCLES:  # v3 迁移：终局生命周期归一为 ended
+        runtime["lifecycle"] = _LEGACY_LIFECYCLES[lifecycle]
     completed = list(runtime.get("completed_node_ids") or [])
     runtime["completed_node_ids"] = completed
     runtime["closed_node_ids"] = list(runtime.get("closed_node_ids") or [])
@@ -111,11 +121,13 @@ def normalize_node(raw):
     node_id = raw.get("node_id") or raw.get("节点ID")
     if not isinstance(node_id, str) or not node_id.strip():
         raise ValueError("任务节点须提供稳定 节点ID")
-    outcome = raw.get("outcome") or raw.get("终局")
-    outcome_alias = {"解决": "resolved", "失败": "failed", "关闭": "closed"}
-    outcome = outcome_alias.get(outcome, outcome)
-    if outcome is not None and outcome not in TERMINAL_LIFECYCLES:
-        raise ValueError(f"节点【{node_id}】终局类型不合法")
+    terminal = raw.get("terminal", raw.get("终局"))
+    if terminal is None:
+        terminal = False
+    if terminal in _LEGACY_OUTCOMES:  # 兼容旧三值写法（解决/失败/关闭）
+        terminal = True
+    if not isinstance(terminal, bool):
+        raise ValueError(f"节点【{node_id}】终局须为布尔值")
     join = raw.get("join") or raw.get("汇合规则") or "all"
     if join not in ("all", "any"):
         raise ValueError(f"节点【{node_id}】汇合规则须为 all/any")
@@ -151,7 +163,7 @@ def normalize_node(raw):
         "close_condition": copy.deepcopy(close_condition),
         "close_summary": close_summary,
         "next": _as_list(raw.get("next") if "next" in raw else raw.get("后继节点")),
-        "outcome": outcome,
+        "terminal": terminal,
         "visible": bool(raw.get("visible", raw.get("玩家可见", True))),
         "extension": bool(raw.get("extension", raw.get("扩展点", False))),
         "reward": normalize_reward(raw.get("reward") if "reward" in raw else raw.get("奖励")),
@@ -258,7 +270,7 @@ def import_legacy_quests(explore, quest_state):
                 "close_condition": None,
                 "close_summary": None,
                 "next": [f"legacy-node-{index + 1}"] if not is_last else [],
-                "outcome": ("closed" if clue.get("关闭") and is_last else None),
+                "terminal": bool(clue.get("关闭") and is_last),
                 "visible": True,
                 "extension": bool(is_last and not clue.get("关闭")),
                 "reward": ({"reward_id": reward_id, "summary": reward, "mutations": []}
@@ -273,7 +285,7 @@ def import_legacy_quests(explore, quest_state):
                 "node_id": "legacy-summary", "requires": [], "join": "all", "condition": {},
                 "summary": clue.get("描述") or "线索已记录",
                 "close_condition": None, "close_summary": None, "next": [],
-                "outcome": "closed" if clue.get("关闭") else None, "visible": True,
+                "terminal": bool(clue.get("关闭")), "visible": True,
                 "extension": not bool(clue.get("关闭")), "reward": None, "effects": [],
             })
             completed.append("legacy-summary")
@@ -287,7 +299,7 @@ def import_legacy_quests(explore, quest_state):
         runtime["completed_node_ids"] = completed
         runtime["settled_node_ids"] = list(completed)
         runtime["claimed_reward_ids"] = claimed
-        runtime["lifecycle"] = "closed" if clue.get("关闭") else "active"
+        runtime["lifecycle"] = "ended" if clue.get("关闭") else "active"
         quest_state["definitions"][quest_name] = definition
         quest_state["runtimes"][quest_name] = runtime
     quest_state["legacy_imported"] = True

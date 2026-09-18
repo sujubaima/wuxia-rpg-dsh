@@ -35,18 +35,21 @@ def blueprint(reward_prefix="study-secret", fact=FACT, name="书房暗痕"):
     return {
         "名称": name, "引子": "书房中似有异样。",
         "隐藏目标": "确认暗格是否存在",
-        "事实定义": [{"事实键": fact, "描述": "书房暗格是否存在", "值类型": "enum", "可选值": ["found", "absent"]}],
+        "事实定义": [{"事实键": fact, "描述": "书房暗格是否存在", "值类型": "enum", "可选值": ["found", "absent", "uncertain"]}],
         "起始节点": ["investigate"],
         "节点": [
             {"节点ID": "investigate", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "开始调查书房。",
-             "后继节点": ["found", "absent"]},
+             "后继节点": ["found", "absent", "follow-up"]},
             {"节点ID": "found", "关闭条件": None, "关闭描述": None, "前置节点": ["investigate"],
              "完成条件": {"fact": fact, "eq": "found"}, "完成摘要": "发现墙后的暗格。",
-             "终局": "解决", "奖励": {"奖励ID": f"{reward_prefix}:found:reward", "描述": "体力+10",
+             "终局": True, "奖励": {"奖励ID": f"{reward_prefix}:found:reward", "描述": "体力+10",
                                       "状态变更": [{"类型": "体力", "操作": "加", "值": 10}] }},
             {"节点ID": "absent", "关闭条件": None, "关闭描述": None, "前置节点": ["investigate"],
              "完成条件": {"fact": fact, "eq": "absent"}, "完成摘要": "确认书房没有暗格。",
-             "终局": "关闭"},
+             "终局": True},
+            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["investigate"],
+             "完成条件": {"fact": fact, "eq": "uncertain"}, "完成摘要": "证据不足，须再探。",
+             "扩展点": True},
         ],
     }
 
@@ -85,7 +88,7 @@ def extension_blueprints():
              "后继节点": ["done", "follow-up"]},
             {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
              "完成条件": {"fact": EXTENSION_FACT, "eq": "done"},
-             "完成摘要": "余波自行平息。", "终局": "关闭"},
+             "完成摘要": "余波自行平息。", "终局": True},
             {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
              "完成条件": {"fact": EXTENSION_FACT, "eq": "follow"},
              "完成摘要": "仍有后续。", "扩展点": True},
@@ -96,7 +99,7 @@ def extension_blueprints():
         "起始节点": ["trace"],
         "节点": [
             {"节点ID": "trace", "关闭条件": None, "关闭描述": None, "前置节点": ["follow-up"], "完成条件": {},
-             "完成摘要": "余波已查清。", "终局": "关闭"},
+             "完成摘要": "余波已查清。", "终局": True},
         ],
     }
     return base, extension
@@ -197,7 +200,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
             mocked["write_quest_state"].assert_called_once()
         self.assertTrue(explore["任务摘要及进度"][0]["关闭"])
 
-    def test_existing_clue_progress_emits_one_generic_update(self):
+    def test_existing_clue_ending_emits_ended_notice(self):
         facts = empty_world_facts()
         quests = empty_quest_state()
         create_quest(facts, quests, blueprint())
@@ -217,8 +220,8 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 session.commit()
                 self.assertEqual(session.public_notice_results(), [{
                     "ok": True,
-                    "msg": "线索【书房暗痕】已更新",
-                    "变更": "线索【书房暗痕】已更新",
+                    "msg": "线索【书房暗痕】已结束",
+                    "变更": "线索【书房暗痕】已结束",
                 }])
         self.assertEqual(explore["体力"], 60)
         self.assertEqual(
@@ -232,18 +235,20 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
         raw["节点"] = [
             {"节点ID": "investigate", "关闭条件": None, "关闭描述": None,
              "完成条件": {}, "完成摘要": "开始调查书房。",
-             "后继节点": ["found"]},
+             "后继节点": ["found", "follow-up"]},
             {"节点ID": "found", "前置节点": ["investigate"],
              "完成条件": {"fact": FACT, "eq": "found"},
              "完成摘要": "发现墙后的暗格。",
              "关闭条件": {"fact": FACT, "eq": "absent"},
              "关闭描述": "确认书房并无暗格，此路已断。",
-             "后继节点": ["finish"],
+             "后继节点": ["finish", "follow-up"],
              "奖励": {"奖励ID": "closed-path:reward", "描述": "体力+10",
                      "状态变更": [{"类型": "体力", "操作": "加", "值": 10}]}},
             {"节点ID": "finish", "前置节点": ["found"],
              "关闭条件": None, "关闭描述": None,
-             "完成条件": {}, "终局": "解决"},
+             "完成条件": {}, "终局": True},
+            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["found"],
+             "完成条件": {}, "扩展点": True},
         ]
         explore = {"体力": 50, "任务摘要及进度": []}
         with self._patch_storage(), \
@@ -259,9 +264,9 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 ])
                 self.assertTrue(all(row["ok"] for row in results), results)
                 runtime = session.quest_state["runtimes"]["暗格线索中断"]
-                self.assertEqual(runtime["lifecycle"], "closed")
+                self.assertEqual(runtime["lifecycle"], "ended")
                 self.assertEqual(runtime["closed_node_ids"], ["found"])
-                self.assertEqual(runtime["blocked_node_ids"], ["finish"])
+                self.assertEqual(runtime["blocked_node_ids"], ["finish", "follow-up"])
                 self.assertEqual(runtime["claimed_reward_ids"], [])
                 session.commit()
         self.assertEqual(explore["体力"], 50)
@@ -420,12 +425,12 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 runtime = session.quest_state["runtimes"]["书房余波"]
                 self.assertEqual(definition["version"], 2)
                 self.assertIn("follow-up", runtime["activated_extension_ids"])
-                self.assertEqual(runtime["lifecycle"], "closed")
+                self.assertEqual(runtime["lifecycle"], "ended")
                 session.commit()
                 self.assertEqual(session.public_notice_results(), [{
                     "ok": True,
-                    "msg": "线索【书房余波】已更新",
-                    "变更": "线索【书房余波】已更新",
+                    "msg": "线索【书房余波】已结束",
+                    "变更": "线索【书房余波】已结束",
                 }])
 
     def test_prepared_hidden_blueprint_stays_hidden(self):
@@ -660,7 +665,7 @@ def gate_blueprint():
              "完成摘要": "到达扩展点。", "扩展点": True},
             {"节点ID": "settled", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": GATE_FACT, "eq": "abandoned"},
-             "完成摘要": "线索就此了结。", "终局": "解决"},
+             "完成摘要": "线索就此了结。", "终局": True},
         ],
     }
 
@@ -750,7 +755,7 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
                 "起始节点": ["after-gate"],
                 "节点": [{"节点ID": "after-gate", "关闭条件": None, "关闭描述": None,
                            "前置节点": ["gate"], "完成条件": {},
-                           "完成摘要": "扩展后继收束。", "终局": "关闭"}],
+                           "完成摘要": "扩展后继收束。", "终局": True}],
             },
         }]})
         self.assertTrue(prepared.get("ok"), prepared)

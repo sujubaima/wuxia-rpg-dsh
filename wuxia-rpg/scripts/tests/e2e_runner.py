@@ -80,15 +80,18 @@ def quest_blueprint(reward_prefix="e2e-ledger", fact="item:e2e_ledger.authentici
         "起始节点": ["heard"],
         "节点": [
             {"节点ID": "heard", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "得到账册线索。",
-             "后继节点": ["authentic", "forged"]},
+             "后继节点": ["authentic", "forged", "follow-up"]},
+            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
+             "完成条件": {"node": "heard", "completed": True}, "完成摘要": "余波待查。",
+             "扩展点": True},
             {"节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "authentic"},
-             "完成摘要": "确认账册为真。", "终局": "解决",
+             "完成摘要": "确认账册为真。", "终局": True,
              "奖励": {"奖励ID": f"{reward_prefix}:reward", "描述": "体力+5",
                      "状态变更": [{"类型": "体力", "操作": "加", "值": 5}]}},
             {"节点ID": "forged", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "forged"},
-             "完成摘要": "确认账册为伪。", "终局": "关闭"},
+             "完成摘要": "确认账册为伪。", "终局": True},
         ],
     }
 
@@ -329,8 +332,8 @@ def main():
         quest_state = sm.read_quest_state(slot, tmp)
         world_facts = sm.read_world_facts(slot, tmp)
         check("judge 原子采用多个任务并归约事实奖励", adopted.get("错误") is None
-              and quest_state.get("runtimes", {}).get("回归账册", {}).get("lifecycle") == "resolved"
-              and quest_state.get("runtimes", {}).get("回归密信", {}).get("lifecycle") == "resolved"
+              and quest_state.get("runtimes", {}).get("回归账册", {}).get("lifecycle") == "ended"
+              and quest_state.get("runtimes", {}).get("回归密信", {}).get("lifecycle") == "ended"
               and world_facts.get("records", {}).get(fact, {}).get("value") == "authentic"
               and world_facts.get("records", {}).get(second_fact, {}).get("value") == "authentic"
               and int((sm.read_explore(slot, tmp) or {}).get("体力", 0) or 0) == min(100, stamina_before + 10),
