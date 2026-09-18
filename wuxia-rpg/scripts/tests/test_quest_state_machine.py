@@ -11,8 +11,8 @@ sys.path.insert(0, SCRIPTS)
 
 from quest.conditions import validate_condition
 from quest.engine import (create_quest, discover_quest, extend_quest,
-                          pending_extension_gates, potential_progress_hints,
-                          reduce_affected_quests)
+                          modify_quest_rewards, pending_extension_gates,
+                          potential_progress_hints, reduce_affected_quests)
 from quest.events import EventFactory, LOCATION_CHANGED
 from quest.models import empty_quest_state, normalize_quest_state
 from quest.projection import project_clues
@@ -30,19 +30,24 @@ def ledger_blueprint(include_forged=True):
     nodes = [
         {
             "节点ID": "heard", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "得知账册之谜。",
-            "后继节点": ["authentic"] + (["forged"] if include_forged else []),
+            "后继节点": ["authentic", "follow-up"] + (["forged"] if include_forged else []),
+        },
+        {
+            "节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
+            "完成条件": {"node": "heard", "completed": True}, "完成摘要": "余波待查。",
+            "扩展点": True,
         },
         {
             "节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
             "完成条件": {"fact": FACT, "eq": "authentic"},
-            "完成摘要": "确认账册是真品。", "终局": "解决",
+            "完成摘要": "确认账册是真品。", "终局": True,
         },
     ]
     if include_forged:
         nodes.append({
             "节点ID": "forged", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
             "完成条件": {"fact": FACT, "eq": "forged"},
-            "完成摘要": "查明账册系伪造。", "终局": "关闭",
+            "完成摘要": "查明账册系伪造。", "终局": True,
             "奖励": {
                 "奖励ID": "ledger:forged:reward",
                 "描述": "经验500",
@@ -85,10 +90,11 @@ class QuestStateMachineTest(unittest.TestCase):
             self.facts, self.quests, fact_key=FACT
         )
         runtime = self.quests["runtimes"]["账册疑云"]
-        self.assertEqual(runtime["lifecycle"], "closed")
+        self.assertEqual(runtime["lifecycle"], "ended")
         self.assertEqual(runtime["completed_node_ids"], ["heard", "forged"])
         self.assertEqual(len(mutations), 1)
-        self.assertEqual(notices[-1]["summary"], "查明账册系伪造。")
+        self.assertEqual(notices[-2]["summary"], "查明账册系伪造。")
+        self.assertEqual(notices[-1], {"quest_name": "账册疑云", "kind": "ended"})
 
         mutations, _, notices, _ = reduce_affected_quests(
             self.facts, self.quests, fact_key=FACT
@@ -115,7 +121,7 @@ class QuestStateMachineTest(unittest.TestCase):
                  "完成条件": {"fact": FACT, "eq": "forged"},
                  "后继节点": ["finish"]},
                 {"节点ID": "finish", "关闭条件": None, "关闭描述": None, "前置节点": ["authentic", "forged"],
-                 "汇合规则": "all", "终局": "关闭"},
+                 "汇合规则": "all", "终局": True},
             ],
         }
         definition = normalize_quest_definition(raw)
@@ -129,7 +135,7 @@ class QuestStateMachineTest(unittest.TestCase):
                     {"fact": FACT, "eq": authenticity},
                     {"fact": SEAL_FACT, "eq": seal},
                 ]},
-                "终局": "关闭",
+                "终局": True,
             }
 
         raw = {
@@ -156,12 +162,14 @@ class QuestStateMachineTest(unittest.TestCase):
                  "完成摘要": "取得证词。",
                  "关闭条件": {"fact": FACT, "eq": "forged"},
                  "关闭描述": "证人已经离去，此路已断。",
-                 "后继节点": ["finish"],
+                 "后继节点": ["finish", "follow-up"],
                  "奖励": {"奖励ID": "witness:reward", "描述": "不应发放",
                          "状态变更": [{"类型": "经验", "值": 100}] }},
                 {"节点ID": "finish", "前置节点": ["witness"],
                  "关闭条件": None, "关闭描述": None,
-                 "完成条件": {}, "终局": "解决"},
+                 "完成条件": {}, "终局": True},
+                {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["witness"],
+                 "完成条件": {}, "扩展点": True},
             ],
         }
         upsert_fact(self.facts, FACT, "forged")
@@ -173,11 +181,13 @@ class QuestStateMachineTest(unittest.TestCase):
         self.assertEqual(mutations, [])
         self.assertEqual(runtime["completed_node_ids"], ["start"])
         self.assertEqual(runtime["closed_node_ids"], ["witness"])
-        self.assertEqual(runtime["blocked_node_ids"], ["finish"])
+        self.assertEqual(runtime["blocked_node_ids"], ["finish", "follow-up"])
         self.assertEqual(runtime["settled_node_ids"], ["start", "witness"])
         self.assertEqual(runtime["claimed_reward_ids"], [])
-        self.assertEqual(runtime["lifecycle"], "closed")
-        self.assertEqual(notices[-1]["summary"], "证人已经离去，此路已断。")
+        self.assertEqual(runtime["lifecycle"], "ended")
+        self.assertEqual(notices[-2]["summary"], "证人已经离去，此路已断。")
+        # 任务定局时末尾追加 ended 标记，对外提示为「已结束」
+        self.assertEqual(notices[-1], {"quest_name": "断掉的证词", "kind": "ended"})
         self.assertEqual(
             [row["描述"] for row in project_clues(self.quests)[0]["进展节点"]],
             ["", "证人已经离去，此路已断。"],
@@ -187,7 +197,7 @@ class QuestStateMachineTest(unittest.TestCase):
         )
         reduce_affected_quests(self.facts, self.quests, fact_key=FACT)
         self.assertEqual(runtime["closed_node_ids"], ["witness"])
-        self.assertEqual(runtime["blocked_node_ids"], ["finish"])
+        self.assertEqual(runtime["blocked_node_ids"], ["finish", "follow-up"])
 
     def test_all_join_blocks_but_any_join_keeps_other_path(self):
         def joined(name, join):
@@ -198,13 +208,15 @@ class QuestStateMachineTest(unittest.TestCase):
                      "完成条件": {}, "后继节点": ["left", "right"]},
                     {"节点ID": "left", "前置节点": ["start"],
                      "关闭条件": {}, "关闭描述": "左路到此中断。",
-                     "完成条件": {}, "后继节点": ["finish"]},
+                     "完成条件": {}, "后继节点": ["finish", "follow-up"]},
                     {"节点ID": "right", "前置节点": ["start"],
                      "关闭条件": None, "关闭描述": None,
                      "完成条件": {}, "后继节点": ["finish"]},
                     {"节点ID": "finish", "前置节点": ["left", "right"],
                      "汇合规则": join, "关闭条件": None, "关闭描述": None,
-                     "完成条件": {}, "终局": "解决"},
+                     "完成条件": {}, "终局": True},
+                    {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["left"],
+                     "完成条件": {}, "扩展点": True},
                 ],
             }
 
@@ -212,14 +224,14 @@ class QuestStateMachineTest(unittest.TestCase):
         reduce_affected_quests(self.facts, self.quests, quest_name="必须双路")
         all_runtime = self.quests["runtimes"]["必须双路"]
         self.assertIn("finish", all_runtime["blocked_node_ids"])
-        self.assertEqual(all_runtime["lifecycle"], "closed")
+        self.assertEqual(all_runtime["lifecycle"], "ended")
 
         create_quest(self.facts, self.quests, joined("任一路线", "any"))
         reduce_affected_quests(self.facts, self.quests, quest_name="任一路线")
         any_runtime = self.quests["runtimes"]["任一路线"]
         self.assertNotIn("finish", any_runtime["blocked_node_ids"])
         self.assertIn("finish", any_runtime["completed_node_ids"])
-        self.assertEqual(any_runtime["lifecycle"], "resolved")
+        self.assertEqual(any_runtime["lifecycle"], "ended")
 
     def test_required_close_fields_and_nullable_pair(self):
         raw = ledger_blueprint()
@@ -258,7 +270,7 @@ class QuestStateMachineTest(unittest.TestCase):
                  "完成摘要": "到达扩展点。", "扩展点": True},
                 {"节点ID": "settled", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
                  "完成条件": {"fact": FACT, "eq": "forged"},
-                 "完成摘要": "线索就此了结。", "终局": "解决"},
+                 "完成摘要": "线索就此了结。", "终局": True},
             ],
         }
         create_quest(self.facts, self.quests, raw)
@@ -283,7 +295,7 @@ class QuestStateMachineTest(unittest.TestCase):
                  "后继节点": ["authentic", "future"]},
                 {"节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
                  "完成条件": {"fact": FACT, "eq": "authentic"},
-                 "完成摘要": "真账已有定论。", "终局": "解决"},
+                 "完成摘要": "真账已有定论。", "终局": True},
                 {"节点ID": "future", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
                  "完成条件": {"fact": FACT, "eq": "forged"},
                  "完成摘要": "伪账牵出新的方向。", "扩展点": True},
@@ -294,13 +306,13 @@ class QuestStateMachineTest(unittest.TestCase):
             extend_quest(self.facts, self.quests, {
                 "名称": "账册余波", "版本": 2,
                 "起始节点": ["forged-end"],
-                "节点": [{"节点ID": "forged-end", "关闭条件": None, "关闭描述": None, "终局": "关闭"}],
+                "节点": [{"节点ID": "forged-end", "关闭条件": None, "关闭描述": None, "终局": True}],
             })
         extended = extend_quest(self.facts, self.quests, {
             "名称": "账册余波", "扩展点": "future", "版本": 2,
             "起始节点": ["forged-end"],
             "节点": [{"节点ID": "forged-end", "关闭条件": None, "关闭描述": None, "前置节点": ["future"],
-                       "完成摘要": "伪账后续已收束。", "终局": "关闭"}],
+                       "完成摘要": "伪账后续已收束。", "终局": True}],
         })
         self.assertEqual(extended["nodes"]["future"]["next"], ["forged-end"])
         self.assertFalse(extended["nodes"]["future"]["extension"])
@@ -313,7 +325,7 @@ class QuestStateMachineTest(unittest.TestCase):
                  "完成条件": {}, "后继节点": ["done", "future"]},
                 {"节点ID": "done", "前置节点": ["start"],
                  "关闭条件": None, "关闭描述": None,
-                 "完成条件": {"fact": FACT, "eq": "authentic"}, "终局": "解决"},
+                 "完成条件": {"fact": FACT, "eq": "authentic"}, "终局": True},
                 {"节点ID": "future", "前置节点": ["start"],
                  "完成条件": {"fact": FACT, "eq": "authentic"},
                  "关闭条件": {"fact": FACT, "eq": "forged"},
@@ -328,7 +340,7 @@ class QuestStateMachineTest(unittest.TestCase):
                 "名称": "已断余波", "扩展点": "future", "版本": 2,
                 "起始节点": ["trace"],
                 "节点": [{"节点ID": "trace", "前置节点": ["future"],
-                         "关闭条件": None, "关闭描述": None, "终局": "关闭"}],
+                         "关闭条件": None, "关闭描述": None, "终局": True}],
             })
 
     def test_extension_requires_description_only_for_new_fact_definitions(self):
@@ -341,7 +353,7 @@ class QuestStateMachineTest(unittest.TestCase):
             "节点": [
                 {"节点ID": "start", "关闭条件": None, "关闭描述": None, "后继节点": ["done", "future"]},
                 {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
-                 "完成条件": {"fact": fact, "eq": "done"}, "终局": "解决"},
+                 "完成条件": {"fact": fact, "eq": "done"}, "终局": True},
                 {"节点ID": "future", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
                  "完成条件": {"fact": fact, "eq": "follow"}, "扩展点": True},
             ],
@@ -356,27 +368,102 @@ class QuestStateMachineTest(unittest.TestCase):
                 "事实定义": [{"事实键": new_fact, "值类型": "bool"}],
                 "起始节点": ["trace-missing-description"],
                 "节点": [{"节点ID": "trace-missing-description", "关闭条件": None, "关闭描述": None, "前置节点": ["future"],
-                         "终局": "关闭"}],
+                         "终局": True}],
             })
 
-        full = {
-            "版本": 2, "名称": "旧档后续",
-            "事实定义": [{"事实键": fact, "值类型": "enum",
-                         "可选值": ["done", "follow"]}],
-            "起始节点": ["start"],
-            "节点": [
-                {"节点ID": "start", "关闭条件": None, "关闭描述": None, "后继节点": ["done", "future"]},
-                {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
-                 "完成条件": {"fact": fact, "eq": "done"}, "终局": "解决"},
-                {"节点ID": "future", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
-                 "完成条件": {"fact": fact, "eq": "follow"}, "后继节点": ["trace"]},
-                {"节点ID": "trace", "关闭条件": None, "关闭描述": None, "前置节点": ["future"], "终局": "关闭"},
-            ],
-        }
         extended = extend_quest(self.facts, self.quests, {
-            "任务": full, "扩展点": "future",
+            "名称": "旧档后续", "扩展点": "future", "版本": 2,
+            "起始节点": ["trace"],
+            "节点": [{"节点ID": "trace", "关闭条件": None, "关闭描述": None,
+                     "前置节点": ["future"], "终局": True}],
         })
         self.assertEqual(extended["version"], 2)
+
+    def _modify_quest_setup(self):
+        create_quest(self.facts, self.quests, ledger_blueprint())
+        return self.quests["definitions"]["账册疑云"]
+
+    def test_modify_rewards_updates_pending_node(self):
+        definition = self._modify_quest_setup()
+        before_version = definition["version"]
+        updated = modify_quest_rewards(self.facts, self.quests, {
+            "名称": "账册疑云",
+            "奖励修改": [{
+                "节点ID": "forged",
+                "奖励": {"奖励ID": "ledger:forged:reward", "描述": "经验800",
+                         "状态变更": [{"类型": "经验", "操作": "加", "角色": "玩家", "值": 800}]},
+            }],
+        })
+        self.assertEqual(updated["nodes"]["forged"]["reward"]["mutations"][0]["值"], 800)
+        self.assertEqual(updated["version"], before_version + 1)
+
+    def test_modify_rewards_clears_reward(self):
+        self._modify_quest_setup()
+        updated = modify_quest_rewards(self.facts, self.quests, {
+            "名称": "账册疑云", "奖励修改": [{"节点ID": "forged", "奖励": None}],
+        })
+        self.assertIsNone(updated["nodes"]["forged"]["reward"])
+
+    def test_modify_rewards_rejects_historical_node(self):
+        self._modify_quest_setup()
+        upsert_fact(self.facts, FACT, "forged")
+        reduce_affected_quests(self.facts, self.quests, fact_key=FACT)
+        with self.assertRaisesRegex(ValueError, "不得修改其奖励"):
+            modify_quest_rewards(self.facts, self.quests, {
+                "名称": "账册疑云", "奖励修改": [{"节点ID": "forged", "奖励": None}],
+            })
+
+    def test_modify_rewards_rejects_claimed_or_duplicate_reward_id(self):
+        self._modify_quest_setup()
+        with self.assertRaisesRegex(ValueError, "与其他节点重复"):
+            modify_quest_rewards(self.facts, self.quests, {
+                "名称": "账册疑云",
+                "奖励修改": [{"节点ID": "authentic",
+                             "奖励": {"奖励ID": "ledger:forged:reward", "描述": "重复",
+                                      "状态变更": [{"类型": "经验", "操作": "加", "角色": "玩家", "值": 1}]}}],
+            })
+        self.quests["runtimes"]["账册疑云"]["claimed_reward_ids"] = ["ledger:forged:reward"]
+        with self.assertRaisesRegex(ValueError, "已被领取，不得复用"):
+            modify_quest_rewards(self.facts, self.quests, {
+                "名称": "账册疑云",
+                "奖励修改": [{"节点ID": "authentic",
+                             "奖励": {"奖励ID": "ledger:forged:reward", "描述": "复用",
+                                      "状态变更": [{"类型": "经验", "操作": "加", "角色": "玩家", "值": 1}]}}],
+            })
+
+    def test_modify_rewards_rejects_unknown_quest_and_node(self):
+        self._modify_quest_setup()
+        with self.assertRaisesRegex(ValueError, "未知任务"):
+            modify_quest_rewards(self.facts, self.quests, {"名称": "不存在", "奖励修改": []})
+        with self.assertRaisesRegex(ValueError, "节点不存在"):
+            modify_quest_rewards(self.facts, self.quests, {
+                "名称": "账册疑云", "奖励修改": [{"节点ID": "ghost", "奖励": None}],
+            })
+
+    def test_quest_reward_failure_is_attributed_to_quest_and_node(self):
+        from settle.mutation_executor import MutationExecutor
+        self._modify_quest_setup()
+        executor = MutationExecutor()
+        executor.register("经验", lambda context, mutation: {"ok": True, "msg": "ok"})
+        executor.register("物品", lambda context, mutation: {"ok": False, "msg": "未找到物品【ghost】"})
+        tagged = {"类型": "物品", "名": "ghost", "数量": 1,
+                 "_来源": {"任务": "账册疑云", "节点": "forged", "类别": "奖励", "奖励ID": "ledger:forged:reward"}}
+        execution = executor.execute(None, tagged)
+        result = execution.results[0]
+        self.assertFalse(result["ok"])
+        self.assertIn("任务【账册疑云】节点【forged】奖励【ledger:forged:reward】执行失败", result["msg"])
+        self.assertIn("quest-prepare", result["msg"])
+        self.assertIn("未找到物品", result["msg"])
+
+    def test_extension_rejects_full_definition_mode(self):
+        create_quest(self.facts, self.quests, ledger_blueprint())
+        with self.assertRaisesRegex(ValueError, "不再接受全量定义"):
+            extend_quest(self.facts, self.quests, {
+                "名称": "账册疑云", "扩展点": "follow-up",
+                "任务": {"名称": "账册疑云", "版本": 2,
+                         "起始节点": ["heard"],
+                         "节点": ledger_blueprint()["节点"]},
+            })
 
     def test_condition_dsl_rejects_unknown_and_mistyped_fields(self):
         with self.assertRaisesRegex(ValueError, "未知字段"):
@@ -401,12 +488,16 @@ class QuestStateMachineTest(unittest.TestCase):
     def test_cross_quest_future_fact_effects_are_not_statically_rejected(self):
         def raw(name, value):
             return {
-                "名称": name, "起始节点": ["end"],
-                "节点": [{
-                    "节点ID": "end", "关闭条件": None, "关闭描述": None,
-                    "完成条件": {"fact": FACT, "eq": value}, "终局": "解决",
-                    "效果": [{"类型": "事实", "事实": FACT, "值": value}],
-                }],
+                "名称": name, "起始节点": ["pre"],
+                "节点": [
+                    {"节点ID": "pre", "关闭条件": None, "关闭描述": None,
+                     "完成条件": {}, "后继节点": ["end", "follow-up"]},
+                    {"节点ID": "end", "关闭条件": None, "关闭描述": None, "前置节点": ["pre"],
+                     "完成条件": {"fact": FACT, "eq": value}, "终局": True,
+                     "效果": [{"类型": "事实", "事实": FACT, "值": value}]},
+                    {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["pre"],
+                     "完成条件": {"node": "pre", "completed": True}, "扩展点": True},
+                ],
             }
         create_quest(self.facts, self.quests, raw("真账结论", "authentic"))
         create_quest(self.facts, self.quests, raw("伪账结论", "forged"))
@@ -416,6 +507,19 @@ class QuestStateMachineTest(unittest.TestCase):
         create_quest(self.facts, self.quests, ledger_blueprint())
         with self.assertRaisesRegex(ValueError, "已存在"):
             create_quest(self.facts, self.quests, ledger_blueprint())
+
+    def test_blueprint_without_extension_point_is_accepted(self):
+        raw = {
+            "名称": "无口线索", "起始节点": ["start"],
+            "节点": [
+                {"节点ID": "start", "关闭条件": None, "关闭描述": None, "完成条件": {},
+                 "后继节点": ["done"]},
+                {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
+                 "完成条件": {}, "终局": True},
+            ],
+        }
+        definition = create_quest(self.facts, self.quests, raw)
+        self.assertEqual(definition["name"], "无口线索")
 
     def test_new_blueprint_rejects_legacy_task_id(self):
         raw = ledger_blueprint()
@@ -434,7 +538,7 @@ class QuestStateMachineTest(unittest.TestCase):
             },
             "legacy_imported": True,
         })
-        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(migrated["version"], 4)
         self.assertEqual(set(migrated["definitions"]), {"旧案"})
         self.assertEqual(set(migrated["runtimes"]), {"旧案"})
         self.assertNotIn("quest_id", migrated["definitions"]["旧案"])
@@ -461,6 +565,10 @@ class QuestStateMachineTest(unittest.TestCase):
         runtime = migrated["runtimes"]["旧线索"]
         self.assertIsNone(node["close_condition"])
         self.assertIsNone(node["close_summary"])
+        # v3→v4 迁移：三值终局归一为布尔，终局生命周期归一为 ended
+        self.assertIs(node["terminal"], True)
+        self.assertNotIn("outcome", node)
+        self.assertEqual(runtime["lifecycle"], "ended")
         self.assertEqual(runtime["settled_node_ids"], ["start"])
         self.assertEqual(runtime["closed_node_ids"], [])
         self.assertEqual(runtime["blocked_node_ids"], [])
@@ -500,11 +608,13 @@ class QuestStateMachineTest(unittest.TestCase):
             "名称": "会中断的追查", "起始节点": ["start"],
             "节点": [
                 {"节点ID": "start", "关闭条件": None, "关闭描述": None,
-                 "完成条件": {}, "后继节点": ["finish"]},
+                 "完成条件": {}, "后继节点": ["finish", "follow-up"]},
                 {"节点ID": "finish", "前置节点": ["start"],
                  "完成条件": {"fact": FACT, "eq": "authentic"},
                  "关闭条件": {"fact": SEAL_FACT, "eq": "broken"},
-                 "关闭描述": "封印已毁，追查中断。", "终局": "解决"},
+                 "关闭描述": "封印已毁，追查中断。", "终局": True},
+                {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["start"],
+                 "完成条件": {"node": "start", "completed": True}, "扩展点": True},
             ],
         }
         create_quest(self.facts, self.quests, raw)
@@ -523,7 +633,7 @@ class QuestStateMachineTest(unittest.TestCase):
                 {"节点ID": "finish", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {"all": [
                     {"fact": FACT, "eq": "authentic"},
                     {"fact": SEAL_FACT, "eq": "intact"},
-                ]}, "终局": "关闭"},
+                ]}, "终局": True},
             ],
         })
         self.quests["definitions"]["受阻分支"] = definition
@@ -541,7 +651,7 @@ class QuestStateMachineTest(unittest.TestCase):
                 {"节点ID": "finish", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {"all": [
                     {"fact": FACT, "eq": "authentic"},
                     {"fact": SEAL_FACT, "eq": "intact"},
-                ]}, "终局": "关闭"},
+                ]}, "终局": True},
             ],
         })
         self.quests["definitions"]["可行分支"] = definition
@@ -575,11 +685,14 @@ def hidden_entry_blueprint():
             {"节点ID": "entry-forged", "关闭条件": None, "关闭描述": None, "完成条件": {"fact": FACT, "eq": "forged"},
              "完成摘要": "伪账浮出。", "后继节点": ["close-forged"]},
             {"节点ID": "close-forged", "关闭条件": None, "关闭描述": None, "前置节点": ["entry-forged"], "完成条件": {},
-             "完成摘要": "伪账收束。", "终局": "关闭"},
+             "完成摘要": "伪账收束。", "终局": True},
             {"节点ID": "entry-authentic", "关闭条件": None, "关闭描述": None, "完成条件": {"fact": FACT, "eq": "authentic"},
-             "完成摘要": "真账浮出。", "后继节点": ["resolve-authentic"]},
+             "完成摘要": "真账浮出。", "后继节点": ["resolve-authentic", "follow-up"]},
             {"节点ID": "resolve-authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["entry-authentic"], "完成条件": {},
-             "完成摘要": "真账收束。", "终局": "解决"},
+             "完成摘要": "真账收束。", "终局": True},
+            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["entry-authentic"],
+             "完成条件": {"node": "entry-authentic", "completed": True}, "完成摘要": "真案另有余波。",
+             "扩展点": True},
         ],
     }
 
@@ -614,11 +727,12 @@ class HiddenEntryHintTest(unittest.TestCase):
         )
         runtime = self.quests["runtimes"]["暗账"]
         self.assertEqual(runtime["completed_node_ids"], ["entry-forged", "close-forged"])
-        self.assertEqual(runtime["lifecycle"], "closed")
+        self.assertEqual(runtime["lifecycle"], "ended")
         self.assertEqual(
-            [notice["node_id"] for notice in notices],
+            [notice["node_id"] for notice in notices if "node_id" in notice],
             ["entry-forged", "close-forged"],
         )
+        self.assertEqual(notices[-1], {"quest_name": "暗账", "kind": "ended"})
 
     def test_hidden_entry_hint_silent_when_condition_unsatisfied(self):
         create_quest(self.facts, self.quests, hidden_entry_blueprint(), hidden=True)

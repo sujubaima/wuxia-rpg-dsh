@@ -53,7 +53,8 @@ from quest.events import PLAYER_ACTION_COMPLETED
 from settle.settlement import SettlementSession
 from quest.triggers import build_quest_trigger_registry
 from quest.conditions import referenced_facts
-from quest.engine import create_quest, extend_quest, pending_extension_gates
+from quest.engine import (create_quest, extend_quest, modify_quest_rewards,
+                       pending_extension_gates)
 from quest.models import import_legacy_quests, normalize_quest_state
 from quest.world_facts import normalize_world_facts
 from settle.markdown_ui import attach_render_text
@@ -867,7 +868,7 @@ def _quest_definition_summary(definition):
     return {
         "名称": definition.get("name") or "",
         "节点数": len(nodes),
-        "终局数": sum(1 for node in nodes.values() if node.get("outcome")),
+        "终局数": sum(1 for node in nodes.values() if node.get("terminal")),
         "扩展点数": sum(1 for node in nodes.values() if node.get("extension")),
         "关闭条件节点数": sum(
             1 for node in nodes.values() if node.get("close_condition") is not None
@@ -935,9 +936,13 @@ def quest_prepare(payload=None):
             allowed = {"操作", "蓝图"}
             hidden = False
             kind = "extend"
+        elif operation == "修改":
+            allowed = {"操作", "蓝图"}
+            hidden = False
+            kind = "modify"
         else:
             return _with_turn_state({"ok": False, "槽位": slot,
-                                     "错误": f"{prefix} 操作须为 创建 或 扩展"}, state)
+                                     "错误": f"{prefix} 操作须为 创建、扩展 或 修改"}, state)
         item_extra = set(item) - allowed
         if item_extra:
             return _with_turn_state({
@@ -959,8 +964,10 @@ def quest_prepare(payload=None):
                 definition = create_quest(
                     world_facts, quest_state, copy.deepcopy(raw), hidden=hidden
                 )
-            else:
+            elif kind == "extend":
                 definition = extend_quest(world_facts, quest_state, copy.deepcopy(raw))
+            else:
+                definition = modify_quest_rewards(world_facts, quest_state, copy.deepcopy(raw))
         except (KeyError, TypeError, ValueError) as exc:
             return _with_turn_state({
                 "ok": False,

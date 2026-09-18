@@ -29,18 +29,21 @@ def blueprint(fact=FACT, name="备好的账册"):
         "引子": "旧账册来历不明。",
         "隐藏目标": "查清账册真伪",
         "事实定义": [
-            {"事实键": fact, "描述": "账册的真实真伪", "值类型": "enum", "可选值": ["authentic", "forged"]},
+            {"事实键": fact, "描述": "账册的真实真伪", "值类型": "enum", "可选值": ["authentic", "forged", "uncertain"]},
         ],
         "起始节点": ["heard"],
         "节点": [
             {"节点ID": "heard", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "得到账册线索。",
-             "后继节点": ["authentic", "forged"]},
+             "后继节点": ["authentic", "forged", "follow-up"]},
             {"节点ID": "authentic", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "authentic"},
-             "完成摘要": "确认账册为真。", "终局": "解决"},
+             "完成摘要": "确认账册为真。", "终局": True},
             {"节点ID": "forged", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
              "完成条件": {"fact": fact, "eq": "forged"},
-             "完成摘要": "确认账册为伪。", "终局": "关闭"},
+             "完成摘要": "确认账册为伪。", "终局": True},
+            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["heard"],
+             "完成条件": {"fact": fact, "eq": "uncertain"}, "完成摘要": "证据不足，须再查。",
+             "扩展点": True},
         ],
     }
 
@@ -73,7 +76,7 @@ class QuestPrepareTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual([row["名称"] for row in result["任务"]],
                          ["备好的账册", "第二本账册"])
-        self.assertEqual(result["任务"][0]["节点数"], 3)
+        self.assertEqual(result["任务"][0]["节点数"], 4)
         self.assertEqual(result["任务"][0]["终局数"], 2)
         self.assertEqual(result["任务"][0]["关闭条件节点数"], 0)
         self.assertEqual(result["任务"][0]["引用事实"], [FACT])
@@ -89,12 +92,12 @@ class QuestPrepareTest(unittest.TestCase):
         facts = empty_world_facts()
         register_definition(facts, {
             "事实键": FACT, "描述": "账册的真实真伪",
-            "值类型": "enum", "可选值": ["authentic", "forged"],
+            "值类型": "enum", "可选值": ["authentic", "forged", "uncertain"],
         })
         upsert_fact(facts, FACT, "forged")
         partial = blueprint()
-        partial["节点"] = partial["节点"][:2]
-        partial["节点"][0]["后继节点"] = ["authentic"]
+        partial["节点"] = [partial["节点"][0], partial["节点"][1], partial["节点"][3]]
+        partial["节点"][0]["后继节点"] = ["authentic", "follow-up"]
         storage, phase = self._patch_engine_state(facts=facts)
         with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
             result = engine.quest_prepare({
@@ -165,7 +168,7 @@ class QuestPrepareTest(unittest.TestCase):
                 {"节点ID": "start", "关闭条件": None, "关闭描述": None, "完成条件": {}, "完成摘要": "开始追查。",
                  "后继节点": ["done", "follow-up"]},
                 {"节点ID": "done", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {},
-                 "完成摘要": "主事已了。", "终局": "解决"},
+                 "完成摘要": "主事已了。", "终局": True},
                 {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["start"], "完成条件": {},
                  "完成摘要": "仍有后续。", "扩展点": True},
             ],
@@ -176,7 +179,7 @@ class QuestPrepareTest(unittest.TestCase):
             "起始节点": ["trace"],
             "节点": [
                 {"节点ID": "trace", "关闭条件": None, "关闭描述": None, "前置节点": ["follow-up"], "完成条件": {},
-                 "完成摘要": "查清余波。", "终局": "关闭"},
+                 "完成摘要": "查清余波。", "终局": True},
             ],
         }
         storage, phase = self._patch_engine_state(facts=facts, quests=quests)

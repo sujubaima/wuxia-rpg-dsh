@@ -57,7 +57,16 @@ def preset_blueprint(name="测试故事", region="苏州城", shared_definition=
                 "完成摘要": f"听闻{name}。",
                 "关闭条件": None,
                 "关闭描述": None,
-                "后继节点": ["resolved", "closed"],
+                "后继节点": ["resolved", "closed", "follow-up"],
+            },
+            {
+                "节点ID": "follow-up",
+                "前置节点": ["entry"],
+                "完成条件": {"node": "entry", "completed": True},
+                "完成摘要": f"{name}或有后续。",
+                "关闭条件": None,
+                "关闭描述": None,
+                "扩展点": True,
             },
             {
                 "节点ID": "resolved",
@@ -66,7 +75,7 @@ def preset_blueprint(name="测试故事", region="苏州城", shared_definition=
                 "完成摘要": f"{name}已经解决。",
                 "关闭条件": None,
                 "关闭描述": None,
-                "终局": "解决",
+                "终局": True,
             },
             {
                 "节点ID": "closed",
@@ -75,7 +84,7 @@ def preset_blueprint(name="测试故事", region="苏州城", shared_definition=
                 "完成摘要": f"{name}已经关闭。",
                 "关闭条件": None,
                 "关闭描述": None,
-                "终局": "关闭",
+                "终局": True,
             },
         ],
     }
@@ -367,7 +376,7 @@ class QuestV4ContentTest(unittest.TestCase):
             self.assertGreaterEqual(len(by_id["entry"]["后继节点"]), 2, name)
             endings = [node for node in nodes if node.get("终局")]
             self.assertGreaterEqual(len(endings), 2, name)
-            self.assertTrue(all(node["终局"] == "解决" for node in endings), name)
+            self.assertTrue(all(node["终局"] is True for node in endings), name)
 
             def outcome_values(cond):
                 if not isinstance(cond, dict):
@@ -490,7 +499,7 @@ class QuestV4ContentTest(unittest.TestCase):
                 facts, quests, "quest:v3:taihu.outcome@world", "crushed"
             )
             runtime = quests["runtimes"]["太湖风波"]
-            self.assertEqual(runtime["lifecycle"], "resolved")
+            self.assertEqual(runtime["lifecycle"], "ended")
             self.assertIn("stockade_crushed", runtime["completed_node_ids"])
             follow_ups = {
                 hint["线索"] for hint in potential_progress_hints(facts, quests)
@@ -517,7 +526,7 @@ class QuestV4ContentTest(unittest.TestCase):
                     facts, quests, f"quest:v3:taihu.route-{index}-cut@world"
                 )
             runtime = quests["runtimes"]["太湖风波"]
-            self.assertEqual(runtime["lifecycle"], "closed")
+            self.assertEqual(runtime["lifecycle"], "ended")
             self.assertTrue(runtime["closed_reason"])
 
     def test_close_takes_priority_over_completion(self):
@@ -568,7 +577,7 @@ class QuestV4ContentTest(unittest.TestCase):
                     "完成摘要": "万飞鹏刀法大成，残刀重光。",
                     "关闭条件": None,
                     "关闭描述": None,
-                    "终局": "解决",
+                    "终局": True,
                 }],
                 "事实定义": [{
                     "事实键": "quest:v3:taihu.knife-perfect@world",
@@ -581,7 +590,7 @@ class QuestV4ContentTest(unittest.TestCase):
             runtime = quests["runtimes"]["太湖风波"]
             self.assertIn("ext_knife", runtime["completed_node_ids"])
             self.assertIn("knife_perfect", runtime["completed_node_ids"])
-            self.assertEqual(runtime["lifecycle"], "resolved")
+            self.assertEqual(runtime["lifecycle"], "ended")
             self.assertEqual(runtime["definition_version"], 2)
 
 

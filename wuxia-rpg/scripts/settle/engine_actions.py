@@ -33,7 +33,8 @@ from quest.events import (BATTLE_ENDED, CHARACTER_CREATED, COPPER_CHANGED,
                                   QUEST_DISCOVERED, QUEST_EXTENDED,
                                   RELATION_CHANGED, SKILL_CHANGED,
                                   STAMINA_CHANGED, TIME_ADVANCED)
-from quest.engine import create_quest, discover_quest, extend_quest
+from quest.engine import (create_quest, discover_quest, extend_quest,
+                          modify_quest_rewards)
 from quest.world_facts import upsert_fact
 from settle.engine_fields import (_FIELD_HANDLERS, _apply_mastery, _carry_item_op,
                                   _carry_skill_op, _chg_carry_item, _chg_carry_skill,
@@ -1198,6 +1199,14 @@ def _apply_quest_draft_mutation(context, mutation):
                     copy.deepcopy(record["payload"]),
                 )
                 event_type = QUEST_EXTENDED
+            elif kind == "modify":
+                hidden = False
+                definition = modify_quest_rewards(
+                    context.session.world_facts,
+                    context.session.quest_state,
+                    copy.deepcopy(record["payload"]),
+                )
+                event_type = QUEST_EXTENDED
             else:
                 raise ValueError(f"任务草稿【{quest_name}】类型无效")
         except ValueError as exc:
@@ -1211,8 +1220,9 @@ def _apply_quest_draft_mutation(context, mutation):
 
         results.append({
             "ok": True,
-            "msg": (f"线索【{definition['name']}】已创建"
-                    if kind == "create" else f"线索【{definition['name']}】蓝图已扩展"),
+            "msg": (f"线索【{definition['name']}】已创建" if kind == "create"
+                    else f"线索【{definition['name']}】奖励已修改" if kind == "modify"
+                    else f"线索【{definition['name']}】蓝图已扩展"),
             "_quest_name": definition["name"],
             "_quest_event_type": event_type,
             "_静默": True,
