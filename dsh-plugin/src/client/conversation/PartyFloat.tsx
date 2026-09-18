@@ -47,6 +47,7 @@ export function PartyFloat(props: {
   const battleActive = useBattleMode(state => state.active)
   const [open, setOpen] = useState(true)
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null)
+  const [selected, setSelected] = useState<string | null>(null)
   const [viewport, setViewport] = useState(() => ({
     width: typeof window === 'undefined' ? 1280 : window.innerWidth,
     height: typeof window === 'undefined' ? 800 : window.innerHeight,
@@ -67,6 +68,7 @@ export function PartyFloat(props: {
     useParty.getState().clear()
     useBattleMode.getState().clear()
     setActivePanel(null)
+    setSelected(null)
   }, [props.sessionId])
 
   // timeline 派生值前进（GM 回合落盘/切回会话回填）时清掉面板即时反馈，避免陈旧值遮蔽
@@ -159,6 +161,8 @@ export function PartyFloat(props: {
   const members = party.成员
   const memberSlots = Array.from({ length: 4 }, (_, index) => members[index] ?? null)
   const memberNames = members.map(member => member.名称).filter(Boolean)
+  // 队伍浮窗点选的角色（装备/武学/角色/物品面板的目标）；未点选或已离队时回退首位成员（主控）
+  const selectedMember = selected && memberNames.includes(selected) ? selected : memberNames[0] ?? null
   const saveEnabled = party.slot != null && Boolean(props.panelRequest)
   const loadEnabled = saveEnabled && Boolean(props.command)
 
@@ -255,7 +259,7 @@ export function PartyFloat(props: {
             {memberSlots.map((member, index) => {
               if (!member) {
                 return (
-                  <div key={`empty:${index}`} style={{ padding: '6px 0', borderTop: index > 0 ? '1px solid #6f5527' : 'none' }}>
+                  <div key={`empty:${index}`} style={{ padding: '6px 8px', borderTop: index > 0 ? '1px solid #6f5527' : 'none' }}>
                     <div style={{ marginBottom: 5, fontSize: 13, color: '#9a8c6e' }}>（空位）</div>
                     <div style={{ height: 14, borderRadius: 3, background: '#0f0d0a', marginBottom: 4, border: '1px solid #3a2f22' }} />
                     <div style={{ height: 14, borderRadius: 3, background: '#0f0d0a', border: '1px solid #3a2f22' }} />
@@ -264,9 +268,20 @@ export function PartyFloat(props: {
               }
               const hp = Math.max(0, Math.min(100, ((member.气血 || 0) / (member.气血上限 || 1)) * 100))
               const mp = Math.max(0, Math.min(100, ((member.内力 || 0) / (member.内力上限 || 1)) * 100))
+              const isSelected = member.名称 === selectedMember
               return (
-                <div key={`${member.名称}:${index}`} style={{ padding: '6px 0', borderTop: index > 0 ? '1px solid #6f5527' : 'none' }}>
-                  <div style={{ marginBottom: 5, fontSize: 13, color: '#e8dcc4' }}>{member.名称}</div>
+                <div
+                  key={`${member.名称}:${index}`}
+                  data-no-drag="1"
+                  title="点选后各功能面板展示该角色"
+                  onClick={() => setSelected(member.名称)}
+                  style={{
+                    padding: '6px 8px', borderTop: index > 0 ? '1px solid #6f5527' : 'none',
+                    borderLeft: `2px solid ${isSelected ? '#b1873b' : 'transparent'}`,
+                    background: isSelected ? '#262016' : 'transparent', borderRadius: 4, cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ marginBottom: 5, fontSize: 13, color: isSelected ? '#f0cf82' : '#e8dcc4' }}>{member.名称}</div>
                   <div style={{ position: 'relative', height: 14, borderRadius: 3, background: '#0f0d0a', marginBottom: 4, overflow: 'hidden', border: '1px solid #3a2f22' }}>
                     <div style={{ position: 'absolute', inset: 0, width: hp + '%', background: hp < 35 ? '#a83232' : '#8a4a3a' }} />
                     <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
@@ -317,6 +332,7 @@ export function PartyFloat(props: {
               kind={activePanel}
               slot={party.slot}
               members={memberNames}
+              character={selectedMember}
               request={request}
               command={props.command}
               onLoadRequested={() => setActivePanel(null)}

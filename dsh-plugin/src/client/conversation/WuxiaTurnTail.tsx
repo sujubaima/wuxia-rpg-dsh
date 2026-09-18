@@ -1,13 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Fragment, jsx, jsxs } from 'react/jsx-runtime'
 import { BattleCard } from './battle/BattleCard'
 import type { BattleRequest } from './battle-api'
 import type { DeleteRequest } from './delete-api'
 import { ExplorationBattleCard } from './ExplorationBattleCard'
 import { ExplorationCard } from './ExplorationCard'
+import { toastWuxiaMessage } from './message-toast'
 import type { PanelRequest } from './panel-api'
 import { TitleCard } from './TitleCard'
-import { useTurnLatest, type TurnActivity } from './turn-activity'
+import { useLatestCardTurn, useTurnLatest, type TurnActivity } from './turn-activity'
+import { selectWuxiaResults } from './wuxia-data'
 
 function ExplorationBattleStack({ data, battleRequest, locked }: {
   data: Record<string, any>
@@ -29,8 +31,8 @@ function ExplorationBattleStack({ data, battleRequest, locked }: {
   })
 }
 
-export function WuxiaTurnTail({ matched, command, setDraft, panelRequest, battleRequest, deleteRequest, turnActivity }: {
-  matched?: { turn?: number; results?: readonly any[] }
+export function WuxiaTurnTail({ turn, command, setDraft, panelRequest, battleRequest, deleteRequest, turnActivity }: {
+  turn?: { turn?: number; data?: unknown }
   command?: (line: string) => void
   setDraft?: (text: string) => void
   panelRequest?: PanelRequest
@@ -40,10 +42,23 @@ export function WuxiaTurnTail({ matched, command, setDraft, panelRequest, battle
 }) {
   // hook 须在早退之前调用，保持 hook 顺序稳定
   const latestTurn = useTurnLatest(turnActivity)
+  const latestCardTurn = useLatestCardTurn(turnActivity)
+  // 0.1.6-alpha.2 起 turnTail 为 list 槽：组件收 owner.turn（TurnLocation），自行派生数据
+  const matched = turn ? selectWuxiaResults({ turn }) : null
+  // message-ui 不渲染卡片，提示改为 toast；仅本回合即会话最新回合时弹，历史回溯不重复
+  useEffect(() => {
+    if (!matched || matched.turn === undefined || matched.turn !== latestTurn) return
+    for (const item of matched.results) {
+      if (item?.界面 === 'message-ui') toastWuxiaMessage(item)
+    }
+  })
   if (!matched || !matched.results || matched.results.length === 0) return null
-  // 一旦有新回合开始，本卡即为过时快照，永久锁定、不随回合结束恢复
-  const stale = matched.turn !== undefined && latestTurn !== undefined && matched.turn !== latestTurn
-  const result = matched.results[matched.results.length - 1]
+  // 本回合取最后一张有效卡片；纯提示回合不出卡片
+  const cardResults = matched.results.filter((item: any) => item?.界面 !== 'message-ui')
+  if (cardResults.length === 0) return null
+  // 纯 message-ui 提示回合不推进状态：置灰指针跳过它们，上一轮卡片保持可用
+  const stale = matched.turn !== undefined && latestCardTurn !== undefined && matched.turn !== latestCardTurn
+  const result = cardResults[cardResults.length - 1]
   const view = result?.界面 ?? '?'
   const saves = result?.存档列表 as any[] | undefined
 

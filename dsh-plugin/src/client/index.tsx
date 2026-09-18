@@ -11,7 +11,7 @@ import { partySourceOf } from './conversation/party-activity'
 import { TitleGate } from './conversation/TitleGate'
 import { WuxiaTurnTail } from './conversation/WuxiaTurnTail'
 import { WuxiaView } from './conversation/WuxiaView'
-import { selectWuxiaResults, wuxiaDefinition } from './conversation/wuxia-data'
+import { wuxiaDefinition } from './conversation/wuxia-data'
 import { turnActivityOf } from './conversation/turn-activity'
 
 export const name = 'wuxia-rpg-client'
@@ -34,10 +34,11 @@ export function apply(ctx: any): void {
     inject: (sessionId: unknown) => ({ sessionId }),
   }, WuxiaView))
 
+  // turnTail 自 0.1.6-alpha.2 起是 list 槽：注册须带 id，数据由组件从 owner.turn 自取。
   // session.command 直接调用隐藏斜杠命令；composer draft 每次点击时重新取得 scoped input。
   ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register({
     name: 'conversation.chat.turnTail',
-    select: selectWuxiaResults,
+    id: 'wuxia',
     inject: (sessionId: any) => {
       let command: ((line: string) => void) | undefined
       let setDraft: ((text: string) => void) | undefined

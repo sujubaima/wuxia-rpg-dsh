@@ -8,7 +8,8 @@ const EQUIP_SLOTS = ['武器1', '武器2', '护甲', '饰品', '冠巾']
 const WEAPON_SUBS = new Set(['刀', '剑', '奇门', '搏击', '暗器', '长兵'])
 const SLOT_BY_SUB: Record<string, string> = { 护甲: '护甲', 饰品: '饰品', 冠巾: '冠巾' }
 
-export function EquipPanel({ slot, request }: PanelProps) {
+export function EquipPanel({ slot, request, character }: PanelProps) {
+  const role = character || undefined
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
@@ -19,7 +20,7 @@ export function EquipPanel({ slot, request }: PanelProps) {
     if (showLoading) setLoading(true)
     setError('')
     try {
-      const response = await request(slot, [{ 类型: '配置装备' }])
+      const response = await request(slot, [{ 类型: '配置装备', ...(role ? { 角色: role } : {}) }])
       const next = response.results[0]
       const err = engineError(next)
       if (err) throw new Error(err)
@@ -29,7 +30,7 @@ export function EquipPanel({ slot, request }: PanelProps) {
     } finally {
       setLoading(false)
     }
-  }, [request, slot])
+  }, [request, role, slot])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -39,7 +40,7 @@ export function EquipPanel({ slot, request }: PanelProps) {
     setError('')
     setNotice('')
     try {
-      const response = await request(slot, [action])
+      const response = await request(slot, [{ ...action, ...(role ? { 角色: role } : {}) }])
       const result = response.results[0]
       const err = engineError(result)
       if (err) throw new Error(err)

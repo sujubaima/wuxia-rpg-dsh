@@ -12,7 +12,8 @@ const TYPE_SUBS: Record<string, string[]> = {
   饰品: [],
 }
 
-export function BagPanel({ slot, request }: PanelProps) {
+export function BagPanel({ slot, request, character }: PanelProps) {
+  const role = character || undefined
   const [type, setType] = useState('')
   const [sub, setSub] = useState('')
   const [bag, setBag] = useState<any>(null)
@@ -27,11 +28,11 @@ export function BagPanel({ slot, request }: PanelProps) {
     const seq = ++loadSeq.current
     if (showLoading) setLoading(true)
     setError('')
-    const action: Record<string, unknown> = { 类型: '查看背包' }
+    const action: Record<string, unknown> = { 类型: '查看背包', ...(role ? { 角色: role } : {}) }
     if (type) action.筛选类型 = type
     if (type && sub) action.筛选子类型 = sub
     try {
-      const response = await request(slot, [action, { 类型: '配置物品' }])
+      const response = await request(slot, [action, { 类型: '配置物品', ...(role ? { 角色: role } : {}) }])
       if (seq !== loadSeq.current) return
       const [nextBag, nextCarry] = response.results
       const err = engineError(nextBag) || engineError(nextCarry)
@@ -43,7 +44,7 @@ export function BagPanel({ slot, request }: PanelProps) {
     } finally {
       if (seq === loadSeq.current) setLoading(false)
     }
-  }, [request, slot, sub, type])
+  }, [request, role, slot, sub, type])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -53,7 +54,11 @@ export function BagPanel({ slot, request }: PanelProps) {
     setError('')
     setNotice('')
     try {
-      const response = await request(slot, [action])
+      // 使用物品按 目标 结算（从目标物品栏扣除并生效）；其余行为按 角色 配置
+      const withRole = role
+        ? { ...action, ...(action.类型 === '使用物品' ? { 目标: role } : { 角色: role }) }
+        : action
+      const response = await request(slot, [withRole])
       const result = response.results[0]
       const err = engineError(result)
       if (err) throw new Error(err)

@@ -37,16 +37,17 @@ export function panelLabel(kind: PanelKind): string {
 }
 
 export function PanelContent({
-  kind, slot, members, request, command, onLoadRequested,
+  kind, slot, members, character, request, command, onLoadRequested,
 }: {
   kind: PanelKind
   slot: number
   members: string[]
+  character?: string | null
   request: PanelRequest
   command?: (line: string) => void
   onLoadRequested?: () => void
 }) {
-  const props = { slot, members, request }
+  const props = { slot, members, character, request }
   switch (kind) {
     case 'save': return <SavePanel {...props} />
     case 'load': return <LoadPanel {...props} command={command} onLoadRequested={onLoadRequested} />
