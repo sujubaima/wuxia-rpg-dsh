@@ -4,15 +4,12 @@ import {
   PanelNotice, PanelTable, SectionTitle, type PanelProps,
 } from './PanelPrimitives'
 
-export function CharacterPanel({ slot, request, members }: PanelProps) {
-  const [selected, setSelected] = useState(() => members[0] || '')
+export function CharacterPanel({ slot, request, members, character }: PanelProps) {
+  // 选中角色统一在队伍浮窗点选；缺省回退首位成员（主控）
+  const selected = character || members[0] || ''
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-
-  useEffect(() => {
-    if (!members.includes(selected)) setSelected(members[0] || '')
-  }, [members, selected])
 
   const refresh = useCallback(async () => {
     if (!selected) {
@@ -55,11 +52,8 @@ export function CharacterPanel({ slot, request, members }: PanelProps) {
   return (
     <div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-        {members.map(name => (
-          <PanelButton key={name} active={selected === name} disabled={loading && selected === name} onClick={() => setSelected(name)}>{name}</PanelButton>
-        ))}
-        <span style={{ flex: 1 }} />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <span style={{ color: '#9a8c6e', fontSize: 12 }}>角色：{selected || '—'}</span>
         <PanelButton disabled={loading || !selected} onClick={() => void refresh()}>刷新</PanelButton>
       </div>
       <PanelNotice kind="error">{error}</PanelNotice>

@@ -4,7 +4,8 @@ import {
   PanelNotice, PanelTable, resultNotice, SectionTitle, selectStyle, type PanelProps,
 } from './PanelPrimitives'
 
-function MasteryPanel({ slot, request, name, onBack }: PanelProps & { name: string; onBack: () => void }) {
+function MasteryPanel({ slot, request, character, name, onBack }: PanelProps & { name: string; onBack: () => void }) {
+  const role = character || undefined
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -15,7 +16,7 @@ function MasteryPanel({ slot, request, name, onBack }: PanelProps & { name: stri
     setLoading(true)
     setError('')
     try {
-      const response = await request(slot, [{ 类型: '武学精进', 武学: name }])
+      const response = await request(slot, [{ 类型: '武学精进', 武学: name, ...(role ? { 角色: role } : {}) }])
       const next = response.results[0]
       const err = engineError(next)
       if (err) throw new Error(err)
@@ -25,7 +26,7 @@ function MasteryPanel({ slot, request, name, onBack }: PanelProps & { name: stri
     } finally {
       setLoading(false)
     }
-  }, [name, request, slot])
+  }, [name, request, role, slot])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -35,7 +36,7 @@ function MasteryPanel({ slot, request, name, onBack }: PanelProps & { name: stri
     setError('')
     setNotice('')
     try {
-      const response = await request(slot, [{ 类型: '武学精进', 武学: name, 操作: '精进' }])
+      const response = await request(slot, [{ 类型: '武学精进', 武学: name, 操作: '精进', ...(role ? { 角色: role } : {}) }])
       const result = response.results[0]
       const err = engineError(result)
       if (err) throw new Error(err)
@@ -138,8 +139,9 @@ function SkillTable({
 }
 
 export function WuxuePanel(props: PanelProps) {
-  const { slot, request, members } = props
-  const mainName = members[0] || ''
+  const { slot, request, members, character } = props
+  // 选中角色统一在队伍浮窗点选；缺省回退首位成员（主控）
+  const mainName = character || members[0] || ''
   const [config, setConfig] = useState<any>(null)
   const [listData, setListData] = useState<any>(null)
   const [selectedXinfa, setSelectedXinfa] = useState<string | null>(null)
@@ -159,7 +161,7 @@ export function WuxuePanel(props: PanelProps) {
     setError('')
     try {
       const response = await request(slot, [
-        { 类型: '配置武学' },
+        { 类型: '配置武学', ...(mainName ? { 角色: mainName } : {}) },
         { 类型: '武学列表', 角色: mainName },
       ])
       const [nextConfig, nextList] = response.results
@@ -183,7 +185,7 @@ export function WuxuePanel(props: PanelProps) {
     setError('')
     setNotice('')
     try {
-      const response = await request(slot, [action])
+      const response = await request(slot, [{ ...action, ...(mainName ? { 角色: mainName } : {}) }])
       const result = response.results[0]
       const err = engineError(result)
       if (err) throw new Error(err)

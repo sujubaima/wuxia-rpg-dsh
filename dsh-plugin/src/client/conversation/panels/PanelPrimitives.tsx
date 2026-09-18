@@ -7,6 +7,8 @@ const muted = '#9a8c6e'
 export interface PanelProps {
   slot: number
   members: string[]
+  /** 队伍浮窗点选的角色名；面板请求将其作为 角色/目标 参数（缺省回退首位成员） */
+  character?: string | null
   request: PanelRequest
 }
 

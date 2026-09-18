@@ -13,13 +13,13 @@ const positiveInteger: FieldValidator = value => typeof value === 'number' && Nu
 const nonNegativeNumber: FieldValidator = value => typeof value === 'number' && Number.isFinite(value) && value >= 0
 
 const ACTION_FIELDS: Record<string, Readonly<Record<string, FieldValidator>>> = {
-  查看背包: { 筛选类型: stringValue, 筛选子类型: stringValue },
-  配置物品: { 操作: stringValue, 物品: stringValue },
-  使用物品: { 物品: stringValue },
+  查看背包: { 筛选类型: stringValue, 筛选子类型: stringValue, 角色: stringValue },
+  配置物品: { 操作: stringValue, 物品: stringValue, 角色: stringValue },
+  使用物品: { 物品: stringValue, 目标: stringValue },
   配置装备: { 操作: stringValue, 槽位: stringValue, 物品: stringValue, 角色: stringValue },
   配置武学: { 操作: stringValue, 武学: stringValue, 运转心法: stringValue, 角色: stringValue },
   武学列表: { 角色: stringValue },
-  武学精进: { 武学: stringValue, 操作: stringValue },
+  武学精进: { 武学: stringValue, 操作: stringValue, 角色: stringValue },
   查看地图: {},
   查看线索: {},
   保存游戏: { 标签: stringValue },
