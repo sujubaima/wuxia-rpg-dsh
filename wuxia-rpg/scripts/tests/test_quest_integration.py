@@ -20,11 +20,32 @@ from settle.engine_actions import _act_create_slot, build_mutation_executor
 from quest.triggers import build_quest_trigger_registry
 from settle import engine_state as est
 from settle.settlement import SettlementSession
-from quest.engine import create_quest, extend_quest
+from quest.engine import create_quest, extend_quest, pending_extension_gates, reduce_affected_quests
 from quest.models import empty_quest_state
 from quest.presets import build_initial_preset_state
 from quest.world_facts import empty_world_facts
 from store import quest_drafts
+from store import save_manager as sm
+from world import scene as sc
+
+
+def judge_elements(slot, save_dir, changes=None):
+    """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」的目的地
+    （功能NPC校验在变更应用后按新位置执行）；功能场景须含绑定功能NPC与全套特殊指令。"""
+    position = None
+    for action in changes or []:
+        if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
+            position = action.get("位置") or action.get("目的地")
+    if not position:
+        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+    region, _, scene = position.partition("·")
+    stype = sc.scene_type(slot, region, scene)
+    npc = sc.scene_npc(slot, region, scene)
+    commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
+    if npc and commands:
+        return [{"主体": npc, "描写": "当值",
+                 "特殊指令": [{"名称": c, "可用": True} for c in commands]}]
+    return [{"主体": "四周", "描写": "一切如常"}]
 
 
 FACT = "scene:study.secret_found@world"
@@ -200,6 +221,53 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
             mocked["write_quest_state"].assert_called_once()
         self.assertTrue(explore["任务摘要及进度"][0]["关闭"])
 
+    def test_close_draft_adoption_closes_extension_point(self):
+        facts = empty_world_facts()
+        quests = empty_quest_state()
+        create_quest(facts, quests, blueprint())
+        reduce_affected_quests(facts, quests)  # 入口节点在创建回合即完成
+        payload = {"名称": "书房暗痕", "节点": "follow-up", "描述": "此案无从再查，就此搁下。"}
+        record = {
+            "kind": "close", "payload": payload, "hidden": False,
+            "content_hash": quest_drafts.definition_hash("close", payload),
+            "quest_name": "书房暗痕",
+            "definition_version": quests["definitions"]["书房暗痕"]["version"],
+            "summary": {"名称": "书房暗痕"},
+        }
+        explore = {"体力": 50, "任务摘要及进度": []}
+        with self._patch_storage(facts, quests), \
+             patch("settle.engine_actions.qd.select_drafts", return_value=draft_batch(record)), \
+             patch("settle.engine_actions.sm.read_round", return_value=0), \
+             patch("settle.settlement.sc.commit_staged"), \
+             patch("settle.settlement.dq.write_character"), \
+             patch("settle.settlement.dq.update_char"):
+            with SettlementSession(
+                1, explore, build_mutation_executor(), "judge", build_quest_trigger_registry()
+            ) as session:
+                results = session.apply_mutations([
+                    {"类型": "线索-采用草稿", "名称列表": ["书房暗痕"]},
+                ])
+                self.assertTrue(all(row["ok"] for row in results), results)
+                runtime = session.quest_state["runtimes"]["书房暗痕"]
+                definition = session.quest_state["definitions"]["书房暗痕"]
+                self.assertEqual(runtime["closed_node_ids"], ["follow-up"])
+                self.assertEqual(runtime["claimed_reward_ids"], [])
+                self.assertEqual(definition["version"], 2)
+                self.assertEqual(definition["nodes"]["follow-up"]["close_summary"],
+                                 "此案无从再查，就此搁下。")
+                self.assertEqual(
+                    pending_extension_gates(session.world_facts, session.quest_state), [])
+                session.commit()
+                self.assertEqual(session.public_notice_results(), [{
+                    "ok": True, "msg": "线索【书房暗痕】已更新",
+                    "变更": "线索【书房暗痕】已更新",
+                }])
+        self.assertEqual(runtime["lifecycle"], "active")
+        self.assertEqual(
+            [row["描述"] for row in explore["任务摘要及进度"][0]["进展节点"]],
+            ["开始调查书房。", "此案无从再查，就此搁下。"],
+        )
+
     def test_existing_clue_ending_emits_ended_notice(self):
         facts = empty_world_facts()
         quests = empty_quest_state()
@@ -235,20 +303,15 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
         raw["节点"] = [
             {"节点ID": "investigate", "关闭条件": None, "关闭描述": None,
              "完成条件": {}, "完成摘要": "开始调查书房。",
-             "后继节点": ["found", "follow-up"]},
+             "后继节点": ["found"]},
             {"节点ID": "found", "前置节点": ["investigate"],
              "完成条件": {"fact": FACT, "eq": "found"},
              "完成摘要": "发现墙后的暗格。",
              "关闭条件": {"fact": FACT, "eq": "absent"},
              "关闭描述": "确认书房并无暗格，此路已断。",
-             "后继节点": ["finish", "follow-up"],
+             "终局": True,
              "奖励": {"奖励ID": "closed-path:reward", "描述": "体力+10",
                      "状态变更": [{"类型": "体力", "操作": "加", "值": 10}]}},
-            {"节点ID": "finish", "前置节点": ["found"],
-             "关闭条件": None, "关闭描述": None,
-             "完成条件": {}, "终局": True},
-            {"节点ID": "follow-up", "关闭条件": None, "关闭描述": None, "前置节点": ["found"],
-             "完成条件": {}, "扩展点": True},
         ]
         explore = {"体力": 50, "任务摘要及进度": []}
         with self._patch_storage(), \
@@ -266,7 +329,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 runtime = session.quest_state["runtimes"]["暗格线索中断"]
                 self.assertEqual(runtime["lifecycle"], "ended")
                 self.assertEqual(runtime["closed_node_ids"], ["found"])
-                self.assertEqual(runtime["blocked_node_ids"], ["finish", "follow-up"])
+                self.assertEqual(runtime["blocked_node_ids"], [])
                 self.assertEqual(runtime["claimed_reward_ids"], [])
                 session.commit()
         self.assertEqual(explore["体力"], 50)
@@ -578,7 +641,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                  patch("settle.engine_actions.es.get", return_value="苏州城"), \
                  patch("settle.engine_actions.sc.load_scenes", return_value={}):
                 results = _act_create_slot(
-                    3, {}, {"角色": {"名称": "试剑人", "装备": {}, "武学": []}}
+                    3, {}, {"角色": gate_character("试剑人")}
                 )
         finally:
             est._SESSION = previous
@@ -672,15 +735,15 @@ def gate_blueprint():
 
 def gate_character(name="打回校验者"):
     return {
-        "名称": name, "阵营": "江湖", "性别": "男", "年岁": 20,
+        "名称": name, "阵营": "江湖", "性别": "男", "年龄": 20,
         "武功定位": "武者",
-        "品性": {"仁善": 50, "义气": 50, "胆魄": 50, "野心": 0, "底线": 50,
-                 "智计": 50, "重利": 0, "守序": 50, "纵欲": 0, "信仰": 0},
         "一级属性": {"根骨": 10, "力道": 10, "身法": 10, "内功": 10},
-        "极性": {"根骨": 50, "力道": 50, "身法": 50, "内功": 50},
-        "铜钱": 1000, "物品": ["玉佩"], "武学": [],
+        "极性": {"内功": "中", "力道": "中", "身法": "中", "根骨": "中"},
+        "铜钱": 1000, "物品": ["玉佩"],
+        "武学": [{"名称": "百缠手", "等级": 1}],
         "武艺": {"搏击": 10, "剑法": 0, "刀法": 0, "长兵": 0, "奇门": 0, "暗器": 0},
-        "技艺": {}, "装备": {},
+        "技艺": {"音律": 0, "弈棋": 0, "诗书": 0, "绘画": 0, "医术": 0, "博物": 0},
+        "装备": {}, "人设": "测试角色",
     }
 
 
@@ -708,7 +771,9 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
         return self._run("go", {"槽位": self.slot, "行为": actions})
 
     def _judge(self, actions, story):
-        return self._run("judge", {"槽位": self.slot, "行为": actions, "当前剧情": story})
+        return self._run("judge", {"槽位": self.slot, "行为": actions, "当前剧情": story,
+                                   "场景要素": judge_elements(self.slot, self.save_dir, actions),
+                                   "提及地点": []})
 
     def _slot_file(self, filename):
         path = os.path.join(self.save_dir, f"slot_{self.slot}", filename)
@@ -769,6 +834,101 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
         self.assertEqual(quest_state["definitions"]["扩展打回"]["version"], 2)
         for node_id in ("gate", "after-gate"):
             self.assertIn(node_id, runtime["completed_node_ids"])
+
+
+class MentionedSceneCheckTest(unittest.TestCase):
+    """judge 提及地点自查：字段不可缺省，须「区域·场景」全名；未登记打回补登记。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.save_dir = self.temp.name
+        self.slot = 5
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def _run(self, command, payload):
+        env = {**os.environ, "WUXIA_RPG_SAVE_DIR": self.save_dir}
+        proc = subprocess.run(
+            [sys.executable, os.path.join(SCRIPTS, "engine.py"), command],
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+        return json.loads(proc.stdout)
+
+    def _open(self):
+        from engine import OPENING_ERA_TEMPLATE
+        created = self._run("go", {"槽位": self.slot,
+                                   "行为": [{"类型": "创建角色", "角色": gate_character("查点人")}]})
+        self.assertIsNone(created.get("错误"), created)
+        opened = self._run("judge", {
+            "槽位": self.slot, "行为": [], "提及地点": [],
+            "场景要素": judge_elements(self.slot, self.save_dir),
+            "当前剧情": OPENING_ERA_TEMPLATE + "\n\n查点人初入江湖。"})
+        self.assertIsNone(opened.get("错误"), opened)
+
+    def _go(self):
+        result = self._run("go", {"槽位": self.slot,
+                                  "行为": [{"类型": "其他行为", "描述": "查探四周"}]})
+        self.assertIsNone(result.get("错误"), result)
+
+    def _judge(self, **extra):
+        return self._run("judge", {"槽位": self.slot, "行为": [], "当前剧情": "一路无话。",
+                                   "场景要素": judge_elements(self.slot, self.save_dir),
+                                   **extra})
+
+    def test_missing_field_is_rejected_then_recovered(self):
+        self._open()
+        self._go()
+        rejected = self._judge()
+        self.assertIn("须传「提及地点」", rejected.get("错误") or "")
+        self.assertEqual(rejected.get("界面"), "exploration-ui")  # gm_error 形态
+        recovered = self._judge(提及地点=[])
+        self.assertIsNone(recovered.get("错误"), recovered)
+
+    def test_unregistered_mention_rejected_until_registered(self):
+        self._open()
+        self._go()
+        rejected = self._judge(提及地点=["苏州·幻影楼"])
+        self.assertIn("幻影楼", rejected.get("错误") or "")
+        self.assertIn("scene-prepare", rejected.get("错误") or "")
+        # 同轮准备并采纳后重试：通过，且登记事件/事实链生效
+        prepared = self._run("scene-prepare", {
+            "槽位": self.slot,
+            "场景": [{"操作": "登记", "区域": "苏州", "场景": "幻影楼"}],
+        })
+        self.assertTrue(prepared.get("ok"), prepared)
+        fixed = self._run("judge", {
+            "槽位": self.slot, "提及地点": ["苏州·幻影楼"], "当前剧情": "行至幻影楼下。",
+            "场景要素": judge_elements(self.slot, self.save_dir),
+            "行为": [{"类型": "场景-采用草稿"}]})
+        self.assertIsNone(fixed.get("错误"), fixed)
+        facts = json.loads(self._slot_file("world_facts.json"))
+        self.assertIn("scene:苏州·幻影楼.exists@world", facts.get("records") or {})
+
+    def test_registered_baseline_full_names_pass(self):
+        self._open()
+        self._go()
+        accepted = self._judge(提及地点=["苏州·玄妙观", "苏州·平江路"])
+        self.assertIsNone(accepted.get("错误"), accepted)
+
+    def test_bare_scene_name_is_rejected(self):
+        self._open()
+        self._go()
+        rejected = self._judge(提及地点=["玄妙观"])
+        self.assertIn("须为「区域·场景」全名", rejected.get("错误") or "")
+        self.assertIn("玄妙观", rejected.get("错误") or "")
+
+    def test_non_list_field_is_rejected(self):
+        self._open()
+        self._go()
+        rejected = self._judge(提及地点="玄妙观")
+        self.assertIn("须传「提及地点」数组", rejected.get("错误") or "")
+
+    def _slot_file(self, filename):
+        path = os.path.join(self.save_dir, f"slot_{self.slot}", filename)
+        with open(path, encoding="utf-8") as file:
+            return file.read()
 
 
 if __name__ == "__main__":

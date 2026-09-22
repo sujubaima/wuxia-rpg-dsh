@@ -22,11 +22,59 @@ def _require_fact_descriptions(definitions):
             raise ValueError(f"事实定义【{definition['fact_key']}】须提供非空 描述")
 
 
-def create_quest(world_facts, quest_state, raw_definition, hidden=False):
+def _validate_incremental_creation(definition):
+    """R1：即兴创建只允许「单一初始节点 + 一级后继」。"""
+    quest_name = definition["name"]
+    starts = definition.get("start_nodes") or []
+    if len(starts) != 1:
+        raise ValueError(f"即兴线索【{quest_name}】须且只须提供一个初始节点")
+    entry = starts[0]
+    entry_node = definition["nodes"][entry]
+    if entry_node.get("terminal") or entry_node.get("extension"):
+        raise ValueError(f"即兴线索【{quest_name}】初始节点【{entry}】不得为终局或扩展点")
+    successors = [node_id for node_id in definition["nodes"] if node_id != entry]
+    if not successors:
+        raise ValueError(f"即兴线索【{quest_name}】初始节点后须至少一个一级后继节点")
+    for node_id in successors:
+        node = definition["nodes"][node_id]
+        if set(node.get("requires") or []) != {entry}:
+            raise ValueError(
+                f"即兴线索【{quest_name}】一级后继【{node_id}】的前置节点须且仅须为初始节点【{entry}】"
+            )
+        if node.get("next"):
+            raise ValueError(
+                f"即兴线索【{quest_name}】一级后继【{node_id}】不得带后继节点（增量模式逐级生长）"
+            )
+    if set(entry_node.get("next") or []) != set(successors):
+        raise ValueError(
+            f"即兴线索【{quest_name}】初始节点的后继节点须且仅须为一级后继：{sorted(successors)}"
+        )
+
+
+def _validate_incremental_extension(previous, candidate, extension_id):
+    """R2：即兴扩展只在扩展点下挂一级新节点，新节点不得再带后继。"""
+    quest_name = candidate["name"]
+    old_ids = set(previous["nodes"])
+    for node_id, node in candidate["nodes"].items():
+        if node_id in old_ids:
+            continue
+        if set(node.get("requires") or []) != {extension_id}:
+            raise ValueError(
+                f"任务【{quest_name}】新增节点【{node_id}】的前置节点须且仅须为扩展点【{extension_id}】"
+            )
+        if node.get("next"):
+            raise ValueError(
+                f"任务【{quest_name}】新增节点【{node_id}】不得带后继节点（增量模式逐级生长）"
+            )
+
+
+def create_quest(world_facts, quest_state, raw_definition, hidden=False, incremental=False):
     definition = normalize_quest_definition(raw_definition)
     quest_name = definition["name"]
     if quest_name in quest_state["definitions"]:
         raise ValueError(f"线索名称【{quest_name}】已存在")
+    if incremental:
+        _validate_incremental_creation(definition)
     _require_fact_descriptions(definition.get("fact_definitions"))
     register_definitions(world_facts, definition.get("fact_definitions"))
     validate_quest_definition(definition, world_facts, quest_state)
@@ -82,7 +130,7 @@ def _incremental_extension(previous, raw):
     return candidate, extension_id
 
 
-def extend_quest(world_facts, quest_state, raw_extension):
+def extend_quest(world_facts, quest_state, raw_extension, incremental=False):
     if not isinstance(raw_extension, dict):
         raise ValueError("线索扩展须为对象")
     if "quest_id" in raw_extension or "任务ID" in raw_extension:
@@ -101,6 +149,8 @@ def extend_quest(world_facts, quest_state, raw_extension):
     if not extension_id:
         raise ValueError(f"任务【{quest_name}】线索扩展须指定 扩展点")
     candidate, extension_id = _incremental_extension(previous, raw_extension)
+    if incremental:
+        _validate_incremental_extension(previous, candidate, extension_id)
     if extension_id not in previous["nodes"] or not previous["nodes"][extension_id].get("extension"):
         raise ValueError(f"任务【{quest_name}】扩展点无效【{extension_id}】")
     if extension_id in set(runtime.get("activated_extension_ids") or []):
@@ -120,6 +170,62 @@ def extend_quest(world_facts, quest_state, raw_extension):
     if extension_id:
         runtime.setdefault("activated_extension_ids", []).append(extension_id)
     return candidate
+
+
+def validate_close_extension(quest_state, quest_name, node_id):
+    """R3 前置校验：目标须为进行中任务里未激活、未关闭/阻断的扩展点。"""
+    definition = quest_state.get("definitions", {}).get(quest_name)
+    runtime = quest_state.get("runtimes", {}).get(quest_name)
+    if not definition or not runtime:
+        raise ValueError(f"未知任务【{quest_name}】")
+    if runtime.get("lifecycle") != "active":
+        raise ValueError(f"任务【{quest_name}】不在进行中，不得关闭扩展点")
+    if not isinstance(node_id, str) or not node_id.strip():
+        raise ValueError(f"任务【{quest_name}】关闭扩展点须提供非空 节点")
+    node_id = node_id.strip()
+    node = definition["nodes"].get(node_id)
+    if not node:
+        raise ValueError(f"任务【{quest_name}】节点不存在【{node_id}】")
+    if node_id in set(runtime.get("activated_extension_ids") or []):
+        raise ValueError(f"任务【{quest_name}】扩展点【{node_id}】已激活，不得关闭")
+    if not node.get("extension"):
+        raise ValueError(f"任务【{quest_name}】节点【{node_id}】不是扩展点")
+    unavailable = (set(runtime.get("closed_node_ids") or [])
+                   | set(runtime.get("blocked_node_ids") or []))
+    if node_id in unavailable:
+        raise ValueError(f"任务【{quest_name}】扩展点【{node_id}】已关闭或阻断")
+    return definition, runtime, node, node_id
+
+
+def close_extension_node(quest_state, quest_name, node_id, summary):
+    """R3：强制关闭未激活扩展点，不增后继（GM 判定该方向无继续推演必要）。
+
+    描述回写蓝图 close_summary（投影层从蓝图渲染关闭文案），版本 +1；
+    runtime 追加 closed/settled 后由既有 reduce（QUEST_EXTENDED 事件触发）
+    传播 blocked 并按 all-settled 规则自动收尾。返回玩家通知（不可见节点为 None）。
+    """
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValueError(f"任务【{quest_name}】关闭扩展点【{node_id}】须提供非空 描述")
+    summary = summary.strip()
+    definition, runtime, node, node_id = validate_close_extension(quest_state, quest_name, node_id)
+    node["close_summary"] = summary
+    definition["version"] = int(definition.get("version", 1)) + 1
+    runtime["definition_version"] = definition["version"]
+    runtime.setdefault("closed_node_ids", []).append(node_id)
+    settled = runtime.setdefault(
+        "settled_node_ids", list(runtime.get("completed_node_ids") or [])
+    )
+    if node_id not in settled:
+        settled.append(node_id)
+    if not node.get("visible", True):
+        return None
+    return {
+        "quest_name": quest_name,
+        "kind": "updated",
+        "node_id": node_id,
+        "summary": summary,
+        "node_state": "closed",
+    }
 
 
 def modify_quest_rewards(world_facts, quest_state, raw):
@@ -274,7 +380,8 @@ def reduce_quest(world_facts, quest_state, quest_name):
                         "类型": "任务扩展",
                         "线索": quest_name,
                         "扩展点": node_id,
-                        "提示": f"线索【{definition['name']}】即将进入扩展点【{node_id}】，须先用 quest-prepare 准备扩展",
+                        "提示": (f"线索【{definition['name']}】即将进入扩展点【{node_id}】，"
+                                 "须先用 quest-prepare 准备扩展，或以 关闭 操作强关该扩展点"),
                     }
                     if hint not in hints:
                         hints.append(hint)

@@ -45,6 +45,8 @@ def _is_mechanical_entry_fact(fact_key):
         fact_key.startswith("character:") and fact_key.endswith(".exists@world")
     ) or (
         fact_key.startswith("character:") and fact_key.endswith(".contact@player")
+    ) or (
+        fact_key.startswith("scene:") and fact_key.endswith(".exists@world")
     )
 
 
