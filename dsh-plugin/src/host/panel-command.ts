@@ -103,7 +103,7 @@ function narrationDirective(
     `不得再次调用 wuxia_go，不得重复扣除金钱、体力或推进时间。\n` +
     `请从 go 之后的推演阶段继续：${continuation}，然后以槽位 ${slot} 调用 wuxia_judge ` +
     `落盘当前剧情、场景要素和经历概括。\n` +
-    `wuxia_judge 应返回 exploration-ui；严格原样输出返回的渲染文本，包括空字符串。`
+    `wuxia_judge 应返回 exploration-ui；若返回渲染文本则原样输出，否则直接输出当前剧情。`
   )
 }
 
@@ -186,7 +186,7 @@ export function registerWuxiaPanelCommand(ctx: Context, serviceUrl: string, time
         if (!followup && needsNarration(action, result)) {
           inv.agent.followup(createUserMessage({
             content: [{ type: 'text' as const, text: narrationDirective(slot, action, result) }],
-            source: { kind: 'plugin', plugin: 'wuxia-rpg', form: 'instructions' },
+            source: { kind: 'wuxia-rpg', form: 'instructions' },
           }))
           followup = true
         }

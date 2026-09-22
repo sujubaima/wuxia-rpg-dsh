@@ -4,7 +4,6 @@ set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$ROOT/dsh-plugin"
-PRESET_SOURCE="$ROOT/dsh-preset/wuxia"
 SKILL_SOURCE="$ROOT/wuxia-rpg"
 PROFILE="web"
 DSH_HOME_INPUT="${DSH_HOME:-$HOME/.dsh}"
@@ -95,8 +94,7 @@ fi
 
 for path in \
   "$PLUGIN_DIR/package.json" \
-  "$PRESET_SOURCE/agent.cordis.yml" \
-  "$PRESET_SOURCE/preset.yml" \
+  "$PLUGIN_DIR/presets/wuxia.patch.yml" \
   "$SKILL_SOURCE/SKILL.md" \
   "$SKILL_SOURCE/tools.json" \
   "$SKILL_SOURCE/scripts/engine_gateway.py" \
@@ -121,74 +119,55 @@ for path in \
   [[ -f "$path" ]] || { echo "错误：插件构建产物不完整，缺少 $path" >&2; exit 1; }
 done
 
-PRESET_PARENT="$DSH_HOME_DIR/.agent-presets"
-PRESET_TARGET="$PRESET_PARENT/wuxia"
-MARKER=".wuxia-rpg-managed"
-STAGE="$PRESET_PARENT/.wuxia-stage-$$"
-BACKUP="$PRESET_PARENT/.wuxia-backup-$$"
-INSTALLED=false
-SUCCESS=false
+SKILL_TARGET="$PLUGIN_DIR/skills/wuxia-rpg"
+SKILL_STAGE="$PLUGIN_DIR/skills/.wuxia-stage-$$"
+PRESET_PATCH="$PLUGIN_DIR/presets/wuxia.patch.yml"
 
-cleanup() {
-  status=$?
-  rm -rf -- "$STAGE"
-  if [[ "$SUCCESS" == false && "$INSTALLED" == true ]]; then
-    rm -rf -- "$PRESET_TARGET"
-    if [[ -e "$BACKUP" ]]; then mv -- "$BACKUP" "$PRESET_TARGET"; fi
+# 清理旧版目录式 Preset（dsh 0.1.7 起不再读取 $DSH_HOME/.agent-presets）
+LEGACY_PRESET="$DSH_HOME_DIR/.agent-presets/wuxia"
+LEGACY_MARKER=".wuxia-rpg-managed"
+if [[ -d "$LEGACY_PRESET" ]]; then
+  if [[ -f "$LEGACY_PRESET/$LEGACY_MARKER" ]]; then
+    echo "==> 移除旧版目录式 Preset：$LEGACY_PRESET"
+    rm -rf -- "$LEGACY_PRESET"
   else
-    rm -rf -- "$BACKUP"
+    echo "警告：$LEGACY_PRESET 非本项目管理，保留不动（新版 DSH 不读取该目录）" >&2
   fi
-  exit "$status"
-}
-trap cleanup EXIT
-
-if [[ -e "$PRESET_TARGET" && ! -f "$PRESET_TARGET/$MARKER" ]]; then
-  echo "错误：$PRESET_TARGET 已存在且不是本项目管理的 Preset，未覆盖" >&2
-  exit 1
 fi
 
-mkdir -p -- "$PRESET_PARENT"
-rm -rf -- "$STAGE" "$BACKUP"
-
-echo "==> [2/4] 组装 portable 武侠 Preset"
-python3 - "$PRESET_SOURCE" "$SKILL_SOURCE" "$STAGE" "$MARKER" <<'PY'
-import os
+echo "==> [2/4] 同步 Skill 到插件包 skills/"
+rm -rf -- "$SKILL_STAGE"
+python3 - "$SKILL_SOURCE" "$SKILL_STAGE" <<'PY'
 import shutil
 import sys
 from pathlib import Path
 
-preset_source, skill_source, stage, marker = map(Path, sys.argv[1:])
+src, dst = map(Path, sys.argv[1:])
 ignore = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store", "tmp")
-shutil.copytree(preset_source, stage)
-shutil.copytree(skill_source, stage / "skills" / "wuxia-rpg", ignore=ignore)
-(stage / marker).write_text("managed by cc-game-dsh install.sh\n", encoding="utf-8")
-composition = (stage / "agent.cordis.yml").read_text(encoding="utf-8")
-if "new URL('skills/', baseUrl)" not in composition:
-    raise SystemExit("错误：Preset 未使用 baseUrl 定位 skills/")
-if not (stage / "skills" / "wuxia-rpg" / "SKILL.md").is_file():
-    raise SystemExit("错误：Preset 内 Skill 不完整")
+shutil.copytree(src, dst, ignore=ignore)
+if not (dst / "SKILL.md").is_file():
+    raise SystemExit("错误：Skill 源不完整，缺少 SKILL.md")
 PY
+rm -rf -- "$SKILL_TARGET"
+mv -- "$SKILL_STAGE" "$SKILL_TARGET"
 
-if [[ -e "$PRESET_TARGET" ]]; then mv -- "$PRESET_TARGET" "$BACKUP"; fi
-mv -- "$STAGE" "$PRESET_TARGET"
-INSTALLED=true
+grep -q "resolve('wuxia-rpg-dsh/package.json')" "$PRESET_PATCH" \
+  || { echo "错误：Preset 声明未使用 wuxia-rpg-dsh 链接定位 skills/" >&2; exit 1; }
 
 echo "==> [3/4] 接入 DSH profile: $PROFILE"
 DSH_HOME="$DSH_HOME_DIR" "${DSH_CMD[@]}" plugin --profile "$PROFILE" add "$PLUGIN_DIR"
 DSH_HOME="$DSH_HOME_DIR" "${DSH_CMD[@]}" plugin --profile "$PROFILE" why wuxia-rpg-dsh >/dev/null
 
 echo "==> [4/4] 校验安装结果"
-[[ -f "$PRESET_TARGET/agent.cordis.yml" ]] || { echo "错误：Preset 安装失败" >&2; exit 1; }
-[[ -f "$PRESET_TARGET/skills/wuxia-rpg/SKILL.md" ]] || { echo "错误：Skill 安装失败" >&2; exit 1; }
-
-SUCCESS=true
+[[ -f "$PRESET_PATCH" ]] || { echo "错误：Preset 声明缺失" >&2; exit 1; }
+[[ -f "$SKILL_TARGET/SKILL.md" ]] || { echo "错误：Skill 同步失败" >&2; exit 1; }
 
 echo
 echo "安装完成："
 echo "  DSH CLI  : $DSH_CMD_LABEL"
 echo "  DSH Home : $DSH_HOME_DIR"
 echo "  Profile  : $PROFILE"
-echo "  Preset   : $PRESET_TARGET"
+echo "  Preset   : $PRESET_PATCH（声明式，随插件 bundle 加载）"
 echo "  Plugin   : $PLUGIN_DIR"
 echo
 printf '启动 DSH：DSH_HOME=%q' "$DSH_HOME_DIR"

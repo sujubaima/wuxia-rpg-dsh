@@ -174,7 +174,7 @@ function conclusionDirective(
     `${JSON.stringify(data)}\n` +
     `不得重跑战斗-开始、战斗-推进或任何战斗操控 action。\n` +
     `${route}\n` +
-    `当前剧情必须完整承接终局并返回 exploration-ui；严格原样输出返回的渲染文本，包括空字符串。\n` +
+    `当前剧情必须完整承接终局并返回 exploration-ui；若返回渲染文本则原样输出，否则直接输出当前剧情。\n` +
     `JSON 纪律：所有工具调用的 arguments 必须是合法 JSON。字符串值内不得出现未转义的半角双引号（引用对话或字词一律用「」），不得含裸换行；如需换行用\\n。`
   )
 }
@@ -234,9 +234,6 @@ export function registerWuxiaBattleCommand(ctx: Context, serviceUrl: string, tim
           槽位: slot,
           行为: [checked.action],
         }, 'go')
-        if (settled.状态冲突 === 'go_already_committed' && isRecord(settled.go_result)) {
-          settled = settled.go_result as EngineData
-        }
         if (engineError(settled)) return success({ result: settled, committed: false })
         if (settled.界面 === 'battle-end-ui') {
           return success({ result: settled, committed: true, pendingAdvance: false })
@@ -287,7 +284,7 @@ export function registerWuxiaBattleCommand(ctx: Context, serviceUrl: string, tim
             type: 'text' as const,
             text: conclusionDirective(slot, summary, checked.decisions),
           }],
-          source: { kind: 'plugin', plugin: 'wuxia-rpg', form: 'instructions' },
+          source: { kind: 'wuxia-rpg', form: 'instructions' },
         }))
         return success({ followup: true })
       }

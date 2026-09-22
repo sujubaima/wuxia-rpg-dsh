@@ -73,7 +73,7 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
         `judge 应返回 exploration-ui，作为新角色首屏并接续后续游戏。`
       inv.agent.followup(createUserMessage({
         content: [{ type: 'text' as const, text: directive }],
-        source: { kind: 'plugin', plugin: 'wuxia-rpg', form: 'instructions' },
+        source: { kind: 'wuxia-rpg', form: 'instructions' },
       }))
       return { kind: 'success' as const }
     },
@@ -98,7 +98,7 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
         `请据此接续游戏会话——后续玩家输入按该存档状态执行。`
       inv.agent.followup(createUserMessage({
         content: [{ type: 'text' as const, text: directive }],
-        source: { kind: 'plugin', plugin: 'wuxia-rpg', form: 'instructions' },
+        source: { kind: 'wuxia-rpg', form: 'instructions' },
       }))
       return { kind: 'success' as const }
     },
