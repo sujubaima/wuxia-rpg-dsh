@@ -109,7 +109,7 @@ function handleEvent(block,bub){
   if(evType==='session'){sessionId=data.session_id;sessionStorage.setItem('wuxia_sid',sessionId);}
   else if(evType==='think_delta'){_waitThink(data.text||'');return;}
   else if(evType==='delta'){appendDelta(bub,data.text);scrollDown();}
-  else if(evType==='tool_result'){_waitAppend('已完成：'+(data.name||''),data.text);}
+  else if(evType==='tool_result'){_waitToolResult(data.name||'',data.text);}
   else if(evType==='tool'){
     if(bub.childNodes.length&&!lastIsTools(bub))bub.appendChild(document.createTextNode('\n'));
     const group=lastIsTools(bub)?bub.lastChild:newToolsGroup(bub);

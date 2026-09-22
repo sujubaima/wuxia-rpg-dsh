@@ -322,8 +322,11 @@
   #waitPanel .wait-summary{color:var(--accent)}
   #waitPanel .wait-detail{display:none;font-size:11px;color:var(--ink);
     background:#0c0a07;border:1px solid var(--border);border-radius:5px;padding:8px 10px;
-    margin:4px 0;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;
-    font-family:Consolas,monospace}
+    margin:4px 0;max-height:300px;overflow:auto;font-family:Consolas,monospace}
+  #waitPanel .wait-detail pre{font-family:inherit;font-size:inherit;color:inherit;margin:0;
+    white-space:pre-wrap;word-break:break-all}
+  #waitPanel .wait-line.open .wait-detail{display:block}
+  #waitPanel .wait-split{border-top:1px dashed var(--ink-dim);margin:8px 0}
   /* 运笔期间隐藏舞台/聊天框/足迹，只留等待面板 */
   #panelTravel.working #stage{display:none}
   #panelTravel.working #composer{display:none}

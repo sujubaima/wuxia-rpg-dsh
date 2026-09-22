@@ -8,7 +8,7 @@
 | DSH 插件 | 在 DeepSeek Harness（DSH）会话中使用武侠卡片、面板与战斗 UI | `wuxia-rpg/`、`dsh-plugin/`、`install.sh` |
 | 自带 Web 套件 | 使用独立 Web UI，通过 agent-lite 连接模型 API 驱动 GM | `wuxia-rpg/`、`web/`、`agent/`、`config.json` |
 
-当前 Skill 版本：`0.9.10`。
+当前 Skill 版本：`0.9.13`。
 
 > [!WARNING]
 > 当前项目仍处于初期阶段，代码实现、游戏机制与数值设计均有待持续打磨。后续版本不排除引入不兼容修改，当前版本仅供体验。
@@ -21,11 +21,10 @@
 │   ├── SKILL.md
 │   ├── references/         # GM 规则、数据结构、战斗规则与 Markdown UI
 │   ├── assets/data/        # 角色、武学、物品、状态、阵营与地图基线数据
-│   └── scripts/            # go / judge / check / quest-prepare / query 等引擎入口
+│   └── scripts/            # go / judge / check / scene-prepare / quest-prepare / query 等引擎入口
 ├── web/                    # 标准库 HTTP/SSE 服务与原生、React Web UI
 ├── agent/                  # 纯 Python 标准库的 agent-lite 底座
-├── dsh-plugin/             # DSH Host 工具、隐藏命令与 Client UI
-├── dsh-preset/wuxia/       # 可移植武侠 GM Preset
+├── dsh-plugin/             # DSH Host 工具、隐藏命令、Client UI 与武侠GM Preset 声明
 ├── config.json             # Web 套件配置
 ├── install.sh              # DSH 插件一键安装脚本
 └── release.sh              # 完整套件打包脚本
@@ -249,7 +248,7 @@ python3 web/server.py
 <skills 根目录>/wuxia-rpg/SKILL.md
 ```
 
-并确认复制的是完整目录。DSH 一键安装后还可检查 `$DSH_HOME/.agent-presets/wuxia/skills/wuxia-rpg/SKILL.md`；随后重启或新建会话，让 Skill 重新扫描。
+并确认复制的是完整目录。DSH 一键安装后还可检查 `dsh-plugin/skills/wuxia-rpg/SKILL.md`（安装器同步）；随后重启或新建会话，让 Skill 重新扫描。
 
 ### Web 的 `llm` 后端无响应
 

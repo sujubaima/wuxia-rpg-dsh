@@ -210,14 +210,25 @@ function runChatStream(msg: string, sid: string, get: GetFn, set: SetFn, hidden:
       onThinkDelta: (text) => {
         const lines = get().waitLines
         const last = lines[lines.length - 1]
-        if (last && last.summary === '— 思考 —') {
+        if (last && last.summary === '推演中：thinking') {
           set({ waitLines: [...lines.slice(0, -1), { ...last, detail: (last.detail || '') + text }] })
         } else {
-          get().waitAppend('— 思考 —', text, true)
+          get().waitAppend('推演中：thinking', text)
         }
       },
       onToolResult: (name, text) => {
-        get().waitAppend('已完成：' + name, text)
+        // 工具结果并入同条推演行（输入/输出两段，分隔线隔开）；
+        // 结果与调用同序到达，配对最早的未输出同名行；无配对行时退回独立行
+        const lines = get().waitLines
+        const summary = '推演中：' + name
+        const idx = lines.findIndex(l => l.summary === summary && l.output === undefined)
+        if (idx >= 0) {
+          const updated = lines.slice()
+          updated[idx] = { ...lines[idx], output: text }
+          set({ waitLines: updated })
+        } else {
+          get().waitAppend('已完成：' + name, text)
+        }
       },
       onTool: (name, args) => {
         const messages = get().messages
@@ -572,9 +583,6 @@ export const useGameStore = create<GameState>((set, get) => {
       set({ busy: true, replayLock: true })
       try {
         let d = await engineGo([action])
-        if (d.状态冲突 === 'go_already_committed' && d.go_result && typeof d.go_result === 'object') {
-          d = d.go_result as EngineResult
-        }
         if (d.错误) { get().addSysLine('战斗操控未成功：' + d.错误, { long: true }); return }
         if (d.界面 === 'battle-end-ui') {
           get().enterBattle(d)

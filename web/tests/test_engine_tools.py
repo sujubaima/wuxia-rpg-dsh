@@ -84,7 +84,7 @@ class EngineClientProcessTest(unittest.TestCase):
             client = EngineClient.connect(SKILL, startup_timeout=10)
             try:
                 manifest = client.get_tools()
-                self.assertEqual(manifest["protocol_version"], "1.2")
+                self.assertEqual(manifest["protocol_version"], "1.6")
                 result = client.call_operation("query", {
                     "槽位": 0, "类型": "状态", "名称": ["不存在"],
                 })
