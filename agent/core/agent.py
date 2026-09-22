@@ -1,7 +1,7 @@
 """Agent 主循环: 接收用户输入 -> 模型推理 -> 工具调用 -> 直到产出最终回复。"""
 
 from .client import ChatClient, ContextOverflowError
-from .session import Session
+from .session import SKILL_TOOL, Session
 from .skills import SkillRegistry, register_builtin_skills
 from .tools import ToolRegistry, register_builtin_tools, clear_read_cache
 
@@ -20,10 +20,34 @@ DEFAULT_SKILL_USAGE_NOTE = (
 )
 
 
+def _format_for_summary(messages, include_thinking=False, include_tools=False):
+    """把待压缩消息格式化为摘要输入行; 按开关过滤 thinking 与工具调用内容,
+    过滤后为空的消息 (如纯工具调用) 整条跳过。"""
+    lines = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool" and not include_tools:
+            continue
+        content = m.get("content") or ""
+        if include_thinking and m.get("reasoning_content"):
+            content = f"[思考] {m['reasoning_content']}\n{content}"
+        if m.get("tool_calls") and include_tools:
+            names = ", ".join(tc["function"]["name"] for tc in m["tool_calls"])
+            content += f" [调工具: {names}]"
+        if not content.strip():
+            continue
+        if len(content) > 500:
+            content = content[:500] + "...(截断)"
+        lines.append(f"{role}: {content}")
+    return lines
+
+
 class Agent:
     def __init__(self, client=None, tools=None, skills=None,
                  system_prompt=None, max_iterations=100, max_context_tokens=1_000_000,
                  skill_dirs=None, reasoning_effort="high", skill_usage_note=None,
+                 include_thinking=False, include_tools=False,
+                 compress_thinking=False, compress_tools=False,
                  on_reasoning=None, on_content=None):
         self.client = client or ChatClient()
         # 主循环推理强度 (压缩摘要的 _summarize 调用不带, 省 token)
@@ -40,7 +64,7 @@ class Agent:
 
         # use_skill 是框架内置工具, 允许模型按需加载技能指令
         @self.tools.tool(
-            name="use_skill",
+            name=SKILL_TOOL,
             description="加载指定技能的完整指令。参数为技能名, 返回该技能的详细指令。",
             parameters={
                 "type": "object",
@@ -65,8 +89,13 @@ class Agent:
 
         prompt = (system_prompt if system_prompt is not None
                   else DEFAULT_SYSTEM + "\n" + self.skills.build_prompt_section())
+        # include_*: 历史轮拼接开关; compress_*: 压缩摘要输入开关, 两组相互独立
         self.session = Session(system_prompt=prompt, max_context_tokens=max_context_tokens,
-                               summarizer=self._summarize)
+                               summarizer=self._summarize,
+                               include_thinking=include_thinking,
+                               include_tools=include_tools,
+                               compress_thinking=compress_thinking,
+                               compress_tools=compress_tools)
         # 历史被压缩/裁剪丢弃后, 旧 read 结果已不在上下文, 去重缓存必须失效
         self.session.on_drop = lambda dropped: clear_read_cache()
         self.max_iterations = max_iterations
@@ -83,16 +112,11 @@ class Agent:
 
     def _summarize(self, dropped, prev_summary):
         """Session 回调: 压缩早期消息为摘要 (供下次拼装 system 前缀)。"""
-        lines = []
-        for m in dropped:
-            role = m.get("role")
-            content = m.get("content") or ""
-            if m.get("tool_calls"):
-                names = ", ".join(tc["function"]["name"] for tc in m["tool_calls"])
-                content += f" [调工具: {names}]"
-            if len(content) > 500:
-                content = content[:500] + "...(截断)"
-            lines.append(f"{role}: {content}")
+        lines = _format_for_summary(
+            dropped,
+            include_thinking=self.session.compress_thinking,
+            include_tools=self.session.compress_tools,
+        )
         user = "早期对话:\n" + "\n".join(lines)
         if prev_summary:
             user = "旧摘要(合并其中仍生效的事实):\n" + prev_summary + "\n\n" + user
@@ -138,9 +162,9 @@ class Agent:
                     if attempt >= 2:
                         raise  # 压缩不了什么, 无救, 放弃此轮由 run() 兜底文案
                     # 首次无无可压缩(单条消息就超)时, 强行丢弃最老消息组
+                    # (drop_head 会把其中的 use_skill 调用提取保留)
                     drop = min(2, len(self.session.messages))
-                    dropped_msgs = self.session.messages[:drop]
-                    self.session.messages = self.session.messages[drop:]
+                    dropped_msgs = self.session.drop_head(drop)
                     if self.session.summarizer:
                         try:
                             self.session.summary = self.session.summarizer(dropped_msgs, self.session.summary)

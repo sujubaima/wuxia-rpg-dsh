@@ -83,7 +83,9 @@ def main():
         skills_dir = "./skills"
 
     # 技能目录必须在 Agent 构造时传入, 在构建 system prompt 之前加载, 否则无法被触发
-    agent = Agent.with_builtins(skill_dirs=[skills_dir] if skills_dir else None)
+    # include_thinking: 暂时开启历史轮 thinking 拼接 (默认 False, 仅当前轮保留 thinking)
+    agent = Agent.with_builtins(skill_dirs=[skills_dir] if skills_dir else None,
+                                include_thinking=True)
     if skills_dir:
         print(f"已加载技能: {', '.join(agent.skills.names())}", file=sys.stderr)
 
