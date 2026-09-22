@@ -6,8 +6,8 @@ from quest.events import (CHARACTER_CREATED, COPPER_CHANGED, DEATH_CHANGED,
                                   LOCATION_CHANGED, MP_CHANGED, NPC_CONTACTED,
                                   PARTY_CHANGED, PLAYER_ACTION_COMPLETED,
                                   QUEST_CREATED, QUEST_DISCOVERED,
-                                  QUEST_EXTENDED, RELATION_CHANGED, SKILL_CHANGED,
-                                  STAMINA_CHANGED, TIME_ADVANCED)
+                                  QUEST_EXTENDED, RELATION_CHANGED, SCENE_REGISTERED,
+                                  SKILL_CHANGED, STAMINA_CHANGED, TIME_ADVANCED)
 from quest.engine import potential_progress_hints, reduce_affected_quests
 from quest.registry import TriggerOutcome, TriggerRegistry
 from quest.world_facts import upsert_fact
@@ -71,6 +71,12 @@ def _mechanical_fact_mutations(event):
         return (_fact_mutation(f"character:{_segment(character)}.exists@world", True, "bool"),)
     if event.is_type(NPC_CONTACTED) and character:
         return (_fact_mutation(f"character:{_segment(character)}.contact@player", True, "bool"),)
+    if event.is_type(SCENE_REGISTERED) and event.get("场景"):
+        # 运行期新登记场景写存在事实（可作任务条件）；基线场景视为始终存在，不写。
+        scene = event.get("场景")
+        if "·" not in scene and event.get("区域"):
+            scene = f"{event.get('区域')}·{scene}"
+        return (_fact_mutation(f"scene:{_segment(scene)}.exists@world", True, "bool"),)
     return ()
 
 

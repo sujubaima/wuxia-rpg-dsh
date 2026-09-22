@@ -224,7 +224,7 @@ class QuestPrepareTest(unittest.TestCase):
         write_batch.assert_not_called()
 
     def test_successful_judge_clears_round_drafts_even_when_unused(self):
-        turn = {"state": turn_state.AWAITING_JUDGE, "origin": "普通行动", "go_result": {}}
+        turn = {"state": turn_state.AWAITING_JUDGE, "origin": "普通行动"}
         with patch("engine.sm._slot_writable", return_value=True), \
              patch("engine._turn_state.read_state", return_value=turn), \
              patch("engine.sm.read_round", return_value=7), \
@@ -236,7 +236,7 @@ class QuestPrepareTest(unittest.TestCase):
         self.assertEqual(result["turn_state"], turn_state.READY)
 
     def test_failed_judge_preserves_round_drafts(self):
-        turn = {"state": turn_state.AWAITING_JUDGE, "origin": "普通行动", "go_result": {}}
+        turn = {"state": turn_state.AWAITING_JUDGE, "origin": "普通行动"}
         with patch("engine.sm._slot_writable", return_value=True), \
              patch("engine._turn_state.read_state", return_value=turn), \
              patch("engine.sm.read_round", return_value=7), \
@@ -246,6 +246,65 @@ class QuestPrepareTest(unittest.TestCase):
         clear_round.assert_not_called()
         self.assertEqual(result["错误"], "裁定失败")
         self.assertEqual(result["turn_state"], turn_state.AWAITING_JUDGE)
+
+
+class QuestPrepareCloseTest(unittest.TestCase):
+    def _patch(self, facts, quests):
+        return patch.multiple(
+            "engine.sm",
+            read_world_facts=lambda slot: copy.deepcopy(facts),
+            read_quest_state=lambda slot: copy.deepcopy(quests),
+            read_explore=lambda slot: {"任务摘要及进度": []},
+            read_round=lambda slot: 7,
+        ), patch("engine._turn_state.read_state",
+                 return_value={"state": turn_state.AWAITING_JUDGE})
+
+    def _created_state(self):
+        facts = empty_world_facts()
+        quests = empty_quest_state()
+        create_quest(facts, quests, blueprint())
+        return facts, quests
+
+    def test_close_prepare_writes_close_draft(self):
+        facts, quests = self._created_state()
+        payload = {"槽位": 1, "任务": [{"操作": "关闭", "蓝图": {
+            "名称": "备好的账册", "节点": "follow-up", "描述": "此案无从再查，就此搁下。"}}]}
+        storage, phase = self._patch(facts, quests)
+        with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare(payload)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["任务"][0], {
+            "操作": "关闭", "版本": 1, "线索": "备好的账册",
+            "关闭节点": "follow-up", "描述": "此案无从再查，就此搁下。"})
+        record = write_batch.call_args[0][2][0]
+        self.assertEqual(record["kind"], "close")
+        self.assertEqual(record["quest_name"], "备好的账册")
+        self.assertEqual(record["definition_version"], 1)
+        self.assertEqual(record["content_hash"],
+                         engine._quest_drafts.definition_hash("close", record["payload"]))
+
+    def test_close_prepare_rejects_extra_fields(self):
+        facts, quests = self._created_state()
+        payload = {"槽位": 1, "任务": [{"操作": "关闭", "蓝图": {
+            "名称": "备好的账册", "节点": "follow-up", "描述": "断线。",
+            "扩展点": "follow-up"}}]}
+        storage, phase = self._patch(facts, quests)
+        with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare(payload)
+        self.assertFalse(result["ok"])
+        self.assertIn("仅允许 名称/节点/描述", result["错误"])
+        write_batch.assert_not_called()
+
+    def test_close_prepare_rejects_non_extension_node(self):
+        facts, quests = self._created_state()
+        payload = {"槽位": 1, "任务": [{"操作": "关闭", "蓝图": {
+            "名称": "备好的账册", "节点": "heard", "描述": "整个线索废弃。"}}]}
+        storage, phase = self._patch(facts, quests)
+        with storage, phase, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare(payload)
+        self.assertFalse(result["ok"])
+        self.assertIn("不是扩展点", result["错误"])
+        write_batch.assert_not_called()
 
 
 if __name__ == "__main__":
