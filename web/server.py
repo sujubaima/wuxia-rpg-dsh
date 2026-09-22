@@ -359,7 +359,10 @@ def _create_agent():
     return Agent(
         tools=registry, skill_dirs=[SKILL_DIR], system_prompt=AGENT_SYS,
         skill_usage_note=WEB_SKILL_USAGE_NOTE,
-        reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "medium"))
+        # 历史轮保留工具组（调用+结果）：GM 跨轮状态判断以 engine 返回为准，
+        # 不依赖自己上条文本输出（webui 模式 GM 不复读渲染文本时尤为关键）
+        include_tools=True,
+        reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "high"))
 
 
 class ResourceLimitedHTTPServer(ThreadingHTTPServer):
@@ -943,14 +946,14 @@ def main():
         if _is_llm_backend():
             print(f"agent 模型服务: AGENT_API_BASE={os.environ.get('AGENT_API_BASE', '(未设置)')} "
                   f"AGENT_MODEL={os.environ.get('AGENT_MODEL', '(未设置)')} "
-                  f"reasoning_effort={os.environ.get('AGENT_REASONING_EFFORT', 'medium')}")
+                  f"reasoning_effort={os.environ.get('AGENT_REASONING_EFFORT', 'high')}")
         else:
             print(f"claude 命令: {CLAUDE_COMMAND}  权限模式: {PERMISSION_MODE}  "
                   f"(config.json claude.command / permission_mode 或对应环境变量)")
         print("Ctrl+C 退出")
         log("server-start", backend=BACKEND, port=port,
             engine_service=str(_engine_client.service_url),
-            reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "medium"))
+            reasoning_effort=os.environ.get("AGENT_REASONING_EFFORT", "high"))
         srv.serve_forever()
     except KeyboardInterrupt:
         print("\n已退出。")

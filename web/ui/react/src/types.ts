@@ -248,7 +248,9 @@ export interface WaitLine {
   id: number
   summary: string
   detail?: string
-  /** 详情默认展开（流式思考行） */
+  /** 工具输出段（推演行）：detail 为输入，与输出合并展示、分隔线隔开 */
+  output?: string
+  /** 详情默认展开；未设置即默认收起（如流式思考行） */
   open?: boolean
 }
 

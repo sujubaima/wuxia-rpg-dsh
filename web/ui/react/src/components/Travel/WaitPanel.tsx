@@ -10,7 +10,15 @@ function WaitLineRow({ l }: { l: WaitLine }) {
         <span className="wait-summary" style={{ cursor: 'pointer' }} onClick={() => setShow(s => !s)}>
           {l.summary}
         </span>
-        <pre className="wait-detail" style={{ display: show ? 'block' : 'none' }}>{l.detail}</pre>
+        <div className="wait-detail" style={{ display: show ? 'block' : 'none' }}>
+          <pre>{l.detail}</pre>
+          {l.output !== undefined && (
+            <>
+              <div className="wait-split" />
+              <pre>{l.output}</pre>
+            </>
+          )}
+        </div>
       </div>
     )
   }

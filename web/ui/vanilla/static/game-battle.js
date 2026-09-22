@@ -578,7 +578,6 @@ async function battleAct(action){
   let enterRet=null;
   try{
     let d=await engineGo([action]);
-    if(d.状态冲突==='go_already_committed'&&d.go_result&&typeof d.go_result==='object'&&!Array.isArray(d.go_result))d=d.go_result;
     if(d.错误){addSysLine('战斗操控未成功：'+d.错误,{long:true});return;}
     if(d.界面==='battle-end-ui'){
       enterRet=enterBattle(d);
@@ -778,6 +777,7 @@ function sendHidden(msg){
           try{const dd=JSON.parse(data);
             if(ev==='session'&&dd.session_id){sessionId=dd.session_id;sessionStorage.setItem('wuxia_sid',sessionId);}
             else if(ev==='tool'){_turnTools++;_waitAppend('推演中：'+dd.name,dd.arguments||'');}
+            else if(ev==='tool_result'){_waitToolResult(dd.name||'',dd.text||'');}
             else if(ev==='state'){syncSlot(dd);handleStateEvent(dd);_waitAppend('state: '+(dd.界面||'?'),JSON.stringify(dd,null,2));}
             else if(ev==='done'){setSteps(-1);$send.disabled=false;$input.focus();}
           }catch(e){}

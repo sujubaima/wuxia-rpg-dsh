@@ -89,12 +89,12 @@ def ignore(directory, names):
     if current == root / "wuxia-rpg" / "scripts" and "tmp" in names:
         ignored.add("tmp")
     if current == root / "dsh-plugin":
-        ignored.update({"src", "tests", "tsconfig.json", "build-client.mjs", "package-lock.json"} & set(names))
+        ignored.update({"src", "tests", "tsconfig.json", "build-client.mjs", "package-lock.json", "skills"} & set(names))
     if current == root / "web" / "ui" / "react" and "node_modules" in names:
         ignored.add("node_modules")
     return ignored
 
-for name in ("wuxia-rpg", "web", "agent", "dsh-plugin", "dsh-preset", "docs"):
+for name in ("wuxia-rpg", "web", "agent", "dsh-plugin", "docs"):
     source = root / name
     if source.exists():
         shutil.copytree(source, stage / name, ignore=ignore)
@@ -114,7 +114,7 @@ need = [
     root / "install.sh",
     root / "dsh-plugin" / "lib" / "index.js",
     root / "dsh-plugin" / "lib" / "client.js",
-    root / "dsh-preset" / "wuxia" / "agent.cordis.yml",
+    root / "dsh-plugin" / "presets" / "wuxia.patch.yml",
     root / "wuxia-rpg" / "SKILL.md",
     root / "wuxia-rpg" / "tools.json",
     root / "wuxia-rpg" / "scripts" / "engine_gateway.py",

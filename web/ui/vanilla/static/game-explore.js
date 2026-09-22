@@ -123,19 +123,39 @@ function _waitAppend(text,detail){
   if(detail){
     const summary=document.createElement('span');summary.className='wait-summary';
     summary.textContent=text;
-    const det=document.createElement('pre');det.className='wait-detail';
-    det.textContent=detail;
-    det.style.display='none';
+    const box=document.createElement('div');box.className='wait-detail';
+    const det=document.createElement('pre');det.textContent=detail;
+    box.appendChild(det);
     summary.style.cursor='pointer';
-    summary.onclick=()=>{const show=det.style.display==='none';
-      det.style.display=show?'block':'none';};
-    line.appendChild(summary);line.appendChild(det);
+    summary.onclick=()=>line.classList.toggle('open');
+    line.appendChild(summary);line.appendChild(box);
   }else{
     line.textContent=text;
   }
   log.appendChild(line);log.scrollTop=log.scrollHeight;
 }
-/* 流式思考行：think_delta 逐段追加进同一条详情（默认展开），其他事件到达即切段 */
+/* 工具结果并入同名「推演中」行：框内分 输入/输出 两段，分隔线隔开（随框显隐）；
+   结果与调用同序到达，配对最早的未输出同名行；无配对行时退回独立行 */
+function _waitToolResult(name,text){
+  const panel=document.getElementById('waitPanel');
+  const log=panel&&panel.querySelector('.wait-log');
+  if(!log)return;
+  const want='推演中：'+name;
+  for(const line of log.children){
+    const s=line.querySelector('.wait-summary');
+    const box=line.querySelector('.wait-detail');
+    if(s&&box&&s.textContent===want&&!box.querySelector('.wait-output')){
+      const split=document.createElement('div');split.className='wait-split';
+      const out=document.createElement('pre');out.className='wait-output';
+      out.textContent=text;
+      box.appendChild(split);box.appendChild(out);
+      log.scrollTop=log.scrollHeight;
+      return;
+    }
+  }
+  _waitAppend('已完成：'+name,text);
+}
+/* 流式思考行：think_delta 逐段追加进同一条详情（默认收起，点击展开），其他事件到达即切段 */
 let _thinkLine=null;
 function _waitThink(delta){
   const panel=document.getElementById('waitPanel');
@@ -143,10 +163,13 @@ function _waitThink(delta){
   if(!_thinkLine){
     const line=document.createElement('div');line.className='wait-line';
     const summary=document.createElement('span');summary.className='wait-summary';
-    summary.textContent='— 思考 —';
-    const det=document.createElement('pre');det.className='wait-detail';
-    det.style.display='block';
-    line.appendChild(summary);line.appendChild(det);
+    summary.textContent='推演中：thinking';
+    summary.style.cursor='pointer';
+    const box=document.createElement('div');box.className='wait-detail';
+    const det=document.createElement('pre');
+    box.appendChild(det);
+    summary.onclick=()=>line.classList.toggle('open');
+    line.appendChild(summary);line.appendChild(box);
     panel.querySelector('.wait-log').appendChild(line);
     _thinkLine=det;
   }
