@@ -35,7 +35,6 @@ def ready_state():
         "version": VERSION,
         "state": READY,
         "origin": None,
-        "go_result": {},
     }
 
 
@@ -48,14 +47,11 @@ def _validate(path, data):
     origin = data.get("origin")
     if origin is not None and not isinstance(origin, str):
         raise JsonSchemaError(path, "origin 应为字符串或 null")
-    go_result = data.get("go_result", {})
-    if not isinstance(go_result, dict):
-        raise JsonSchemaError(path, "go_result 应为对象")
+    # 旧档可能残留 go_result 键（已废弃的 go 结果缓存），忽略即可。
     return {
         "version": VERSION,
         "state": state,
         "origin": origin,
-        "go_result": go_result,
     }
 
 
@@ -71,8 +67,7 @@ def read_state(slot, save_dir=sm.DEFAULT_SAVE_DIR):
     return _validate(path, data)
 
 
-def write_state(slot, state, *, origin=None, go_result=None,
-                save_dir=sm.DEFAULT_SAVE_DIR):
+def write_state(slot, state, *, origin=None, save_dir=sm.DEFAULT_SAVE_DIR):
     """原子写入正式 slot 的阶段状态；slot<=0 不落盘。"""
     if not _enabled(slot):
         return ready_state()
@@ -80,7 +75,6 @@ def write_state(slot, state, *, origin=None, go_result=None,
         "version": VERSION,
         "state": state,
         "origin": origin,
-        "go_result": {} if go_result is None else go_result,
     }
     path = turn_state_path(slot, save_dir)
     data = _validate(path, data)

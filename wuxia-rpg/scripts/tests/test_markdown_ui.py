@@ -656,10 +656,10 @@ class BattlePayloadModeTest(unittest.TestCase):
         self.assertEqual(payload["回合详情"], [{"回合": 1}])
         self.assertEqual(payload["行动信息"], {"行动者": "甲"})
 
-    def test_dsh_emits_structure_only(self):
+    def test_dsh_emits_text_and_structure(self):
         payload = self._emit("DSH")
-        self.assertNotIn("战报", payload)
-        self.assertNotIn("玩家界面", payload)
+        self.assertEqual(payload["战报"], "规范战报")
+        self.assertEqual(payload["玩家界面"], "玩家面板")
         self.assertEqual(payload["回合详情"], [{"回合": 1}])
         self.assertEqual(payload["行动信息"], {"行动者": "甲"})
 
@@ -800,22 +800,26 @@ class AttachRenderTextTest(unittest.TestCase):
         self.assertEqual(set(RENDERERS), set(MARKDOWN_UI_IDS))
         self.assertIn("title-ui", MARKDOWN_UI_IDS)
 
-    def test_dsh_returns_empty_string_for_all(self):
+    def test_llm_renders_and_dsh_skips_render_text(self):
         for ui in MARKDOWN_UI_IDS:
+            base = {"界面": ui, "提示": "x", "结算": []}
+            with self.subTest(ui=ui), patch.dict(os.environ, with_env("LLM")):
+                resp = attach_render_text(dict(base))
+                self.assertTrue(isinstance(resp.get("渲染文本"), str))
             with self.subTest(ui=ui), patch.dict(os.environ, with_env("dsh")):
-                resp = {"界面": ui, "提示": "x", "结算": []}
-                attach_render_text(resp)
-                self.assertEqual(resp["渲染文本"], "")
+                resp = attach_render_text(dict(base))
                 self.assertEqual(resp["渲染模式"], "dsh")
+                self.assertNotIn("渲染文本", resp)
 
     def test_dsh_case_insensitive(self):
         with patch.dict(os.environ, with_env("DSH")):
             resp = {"界面": "message-ui", "提示": "x"}
             attach_render_text(resp)
-            self.assertEqual(resp["渲染文本"], "")
+            self.assertEqual(resp["渲染模式"], "DSH")  # 归一保留原大小写, 仅比较不敏感
+            self.assertNotIn("渲染文本", resp)
 
     def test_non_dsh_modes_render_markdown(self):
-        for mode in (None, "LLM", "WEB_UI"):
+        for mode in (None, "LLM"):
             with self.subTest(mode=mode), patch.dict(os.environ, with_env(mode)):
                 resp = dict(self.SAMPLE)
                 attach_render_text(resp)
@@ -823,6 +827,11 @@ class AttachRenderTextTest(unittest.TestCase):
                 self.assertEqual(resp["渲染模式"], expected_mode)
                 self.assertTrue(resp["渲染文本"].startswith("### 【嵩山·大雄宝殿】"))
                 self.assertIn("请输入指令（", resp["渲染文本"])
+        with patch.dict(os.environ, with_env("WEB_UI")):
+            resp = dict(self.SAMPLE)
+            attach_render_text(resp)
+            self.assertEqual(resp["渲染模式"], "WEB_UI")
+            self.assertNotIn("渲染文本", resp)
 
     def test_title_ui_renders(self):
         with patch.dict(os.environ, with_env(None)):
@@ -856,18 +865,50 @@ class AttachRenderTextTest(unittest.TestCase):
 ENGINE = os.path.join(SCRIPTS, "engine.py")
 
 CHAR = {
-    "名称": "沈孤鸿", "性别": "男", "年龄": 20, "人设": "沉默寡言的独行客",
+    "名称": "沈孤鸿", "性别": "男", "年龄": 20, "阵营": "我方", "人设": "沉默寡言的独行客",
     "一级属性": {"内功": 6, "力道": 6, "身法": 6, "根骨": 6},
     "武艺": {"搏击": 1, "剑法": 8, "刀法": 1, "长兵": 1, "奇门": 1, "暗器": 1},
     "技艺": {"音律": 1, "弈棋": 1, "诗书": 1, "绘画": 1, "医术": 1, "博物": 1},
-    "极性": {"阴阳": "中", "刚柔": "中", "动静": "中", "巧拙": "中"},
+    "极性": {"内功": "中", "力道": "中", "身法": "中", "根骨": "中"},
     "武学": [{"名称": "太乙玄门剑", "等级": 1}], "运转心法": None, "携带技能": ["太乙玄门剑"],
     "装备": {"武器1": "长剑", "护甲": "布衣"},
     "物品": ["小还丹", "小还丹", "补气丸"],
 }
 
 
+_BATTLE_JUDGE_ACTIONS = {"战斗-开始", "战斗-触发", "战斗-推进"}
+
+
+def judge_elements(slot, save_dir, changes=None):
+    """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」的目的地
+    （功能NPC校验在变更应用后按新位置执行）；功能场景须含绑定功能NPC与全套特殊指令。"""
+    from store import save_manager as sm
+    from world import scene as sc
+    position = None
+    for action in changes or []:
+        if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
+            position = action.get("位置") or action.get("目的地")
+    if not position:
+        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+    region, _, scene = position.partition("·")
+    stype = sc.scene_type(slot, region, scene)
+    npc = sc.scene_npc(slot, region, scene)
+    commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
+    if npc and commands:
+        return [{"主体": npc, "描写": "当值",
+                 "特殊指令": [{"名称": c, "可用": True} for c in commands]}]
+    return [{"主体": "四周", "描写": "一切如常"}]
+
+
 def run_engine(slot, payload, cmd, save_dir, mode=None):
+    payload = dict(payload)
+    if cmd == "judge":
+        payload.setdefault("提及地点", [])
+        # 场景要素为非战斗 judge 必填：骨架按落定位置自动补全（显式传入时不覆盖）
+        battle = any(isinstance(a, dict) and a.get("类型") in _BATTLE_JUDGE_ACTIONS
+                     for a in payload.get("行为") or [])
+        if "场景要素" not in payload and not battle:
+            payload["场景要素"] = judge_elements(slot, save_dir, payload.get("行为"))
     env = dict(os.environ, WUXIA_RPG_SAVE_DIR=save_dir)
     env.pop("WUXIA_RPG_RENDER_MODULE", None)
     if mode is not None:
@@ -923,7 +964,7 @@ class EngineIntegrationTest(unittest.TestCase):
     def _start_battle(self):
         slot = self._create_ready_slot()
         # 隔离用例中增强主控，确保开战自动推进稳定停在玩家回合，不受随机先手影响。
-        char_path = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters", "散人", "沈孤鸿.json")
+        char_path = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters", "我方", "沈孤鸿.json")
         with open(char_path, "r", encoding="utf-8") as file:
             player = json.load(file)
         player["一级属性"] = {"内功": 1000, "力道": 1000, "身法": 1000, "根骨": 1000}
@@ -1120,45 +1161,46 @@ class EngineIntegrationTest(unittest.TestCase):
         self.assertIn("渲染文本", ok)
         self.assertEqual(ok["场景要素"][0]["描写"], boundary_description)
 
-    def test_dsh_mode_empty_text_structured_intact(self):
+    def test_dsh_mode_structured_only_without_render_text(self):
         back = run_engine(self.slot, {"行为": [{"类型": "返回游戏"}]}, "go", self.save_dir, mode="dsh")
         self.assertEqual(back.get("渲染模式"), "dsh")
-        self.assertEqual(back.get("渲染文本"), "")
+        self.assertNotIn("渲染文本", back)
         for key in ("剧情描写", "场景要素", "队伍状态", "相邻出口", "当前位置"):
             self.assertIn(key, back)
         panel = run_engine(self.slot, {"行为": [{"类型": "查看地图"}]}, "go", self.save_dir, mode="dsh")
-        self.assertEqual(panel.get("渲染文本"), "")
-        self.assertIn("场景图", panel)
-        self.assertNotIn("邻接图", panel)
-        mastery = run_engine(self.slot, {"行为": [{"类型": "武学精进", "武学": "太乙玄门剑"}]},
-                             "go", self.save_dir, mode="dsh")
-        self.assertEqual(mastery.get("渲染文本"), "")
-        self.assertIn("十境表数据", mastery)
-        self.assertNotIn("十境表", mastery)
-
-    def test_webui_mode_keeps_structured_and_renders(self):
-        panel = run_engine(self.slot, {"行为": [{"类型": "查看地图"}]}, "go", self.save_dir, mode="WEB_UI")
-        self.assertEqual(panel.get("渲染模式"), "WEB_UI")
+        self.assertNotIn("渲染文本", panel)
         self.assertIn("场景图", panel)
         self.assertIn("邻接图", panel)
-        self.assertTrue(panel["渲染文本"])
         mastery = run_engine(self.slot, {"行为": [{"类型": "武学精进", "武学": "太乙玄门剑"}]},
-                             "go", self.save_dir, mode="WEB_UI")
+                             "go", self.save_dir, mode="dsh")
+        self.assertNotIn("渲染文本", mastery)
         self.assertIn("十境表数据", mastery)
         self.assertIn("十境表", mastery)
-        self.assertTrue(mastery["渲染文本"])
+
+    def test_webui_mode_structured_only_without_render_text(self):
+        panel = run_engine(self.slot, {"行为": [{"类型": "查看地图"}]}, "go", self.save_dir, mode="WEB_UI")
+        self.assertEqual(panel.get("渲染模式"), "WEB_UI")
+        self.assertNotIn("渲染文本", panel)
+        self.assertIn("场景图", panel)
+        self.assertIn("邻接图", panel)
+        mastery = run_engine(self.slot, {"行为": [{"类型": "武学精进", "武学": "太乙玄门剑"}]},
+                             "go", self.save_dir, mode="WEB_UI")
+        self.assertNotIn("渲染文本", mastery)
+        self.assertIn("十境表数据", mastery)
+        self.assertIn("十境表", mastery)
 
     def test_title_ui_engine_flow_and_validation(self):
         title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir)
         self.assertEqual(title.get("界面"), "title-ui")
         self.assertEqual(title.get("标题状态"), "主页")
-        self.assertEqual(title.get("版本"), "0.9.11")
+        self.assertEqual(title.get("版本"), "0.9.16")
         self.assertIn("渲染文本", title)
         dsh_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="dsh")
-        self.assertEqual(dsh_title.get("渲染文本"), "")
-        self.assertEqual(dsh_title.get("版本"), "0.9.11")
+        self.assertNotIn("渲染文本", dsh_title)
+        self.assertEqual(dsh_title.get("版本"), "0.9.16")
+        self.assertIn("存档列表", dsh_title)
         web_title = run_engine(0, {"行为": [{"类型": "开始游戏"}]}, "go", self.save_dir, mode="WEB_UI")
-        self.assertTrue(web_title.get("渲染文本"))
+        self.assertNotIn("渲染文本", web_title)
         self.assertIn("存档列表", web_title)
 
         started = run_engine(0, {"行为": [{"类型": "标题-操作", "操作": "开始创建"}]},

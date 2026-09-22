@@ -8,7 +8,7 @@
   engine judge：空行为数组占位、休息/远行（徒步）/远行（舟车）/交谈观察/搜查翻找/其他行为，或战斗操控且战斗结束
   那一回合。普通配置/查询/存档类带 `界面` 直接渲染。
 - **engine judge**：GM 基于 go 的既成结果推演后的裁定落盘。行为数组平铺一等状态变更
-  条目（无剧情推动包壳）+ 顶层叙事字段（当前剧情必填/场景要素/经历概括）。任一状态
+  条目（无剧情推动包壳）+ 顶层叙事字段（当前剧情必填/场景要素必填非空/经历概括）。任一状态
   变更非法则整体回滚本轮 judge，go 已落盘的机制后果不受影响。**仅返回
   exploration-ui 的 judge 结算成功才推进交互轮次**（与传入状态变更内容无关）并可能
   自动存档；战斗-开始/战斗-触发 为 judge 专属 action（推演产物，产出 battle-ui /
@@ -25,6 +25,7 @@ CLI（均从 stdin 读取 JSON）：
   python3 scripts/engine.py judge
   python3 scripts/engine.py check
   python3 scripts/engine.py random-event
+  python3 scripts/engine.py scene-prepare
   python3 scripts/engine.py quest-prepare
   python3 scripts/engine.py query
   python3 scripts/engine.py setting
@@ -35,7 +36,7 @@ import copy
 import os, sys
 import json
 from common import dao as dq
-from common.json_io import JsonReadError
+from common.json_io import JsonMissingError, JsonReadError, warn_json_read
 from common.render_mode import render_mode
 from store import save_manager as sm
 from world import scene as sc
@@ -54,12 +55,13 @@ from settle.settlement import SettlementSession
 from quest.triggers import build_quest_trigger_registry
 from quest.conditions import referenced_facts
 from quest.engine import (create_quest, extend_quest, modify_quest_rewards,
-                       pending_extension_gates)
+                       pending_extension_gates, validate_close_extension)
 from quest.models import import_legacy_quests, normalize_quest_state
 from quest.world_facts import normalize_world_facts
 from settle.markdown_ui import attach_render_text
 from store.tips import write_tips as _write_tips, read_tips as _read_tips
 from store import quest_drafts as _quest_drafts
+from store import scene_drafts as _scene_drafts
 from store.battle_last import write_battle_last as _write_battle_last, battle_last_path as _battle_last_path
 from store.check_log import missing_check_hints as _missing_check_hints, append_check as _append_check
 from store import turn_state as _turn_state
@@ -202,16 +204,13 @@ def _contains_opening_template(payload):
     return isinstance(narrative, str) and OPENING_ERA_SENTENCE in narrative
 
 
-def _turn_error(slot, code, message, state, go_result=None):
-    result = {
+def _turn_error(slot, code, message, state):
+    return {
         "槽位": slot,
         "错误": message,
         "状态冲突": code,
         "turn_state": state,
     }
-    if go_result:
-        result["go_result"] = go_result
-    return result
 
 
 def _with_turn_state(result, state):
@@ -316,7 +315,7 @@ def _settle_go(slot, actions=None):
         sm.write_explore(slot, explore, preserve_narrative=True)
         status = (bt_data.get("战局状态") or {}).get("状态")
         if status and status != "进行中":
-            bt_data.update(_region_info(slot, explore))  # 战后处置判定路线参考
+            bt_data.update(_region_info(slot, explore))  # 战后处置路线参考（区域提示+区域人物）
         # go 默认无界面（推进 judge 出 battle-ui）；终局我方胜时直接出 battle-end-ui（处决裁定界面）
         bt_data.pop("界面", None)
         _write_battle_last(slot, bt_data)
@@ -344,17 +343,20 @@ def _settle_go(slot, actions=None):
             and not (types <= read_only)):
         sm.write_explore(slot, explore, preserve_narrative=True)
 
-    # 建档时 stdin 槽位≠新档：剩余/tips/区域场景均须按新 slot 取（其余动作 state_slot==slot 无感）
+    # 建档时 stdin 槽位≠新档：剩余/tips/区域信息均须按新 slot 取（其余动作 state_slot==slot 无感）
     state_slot = slot
+    created_slot = None
     for r in results:
         if r.get("新建slot"):
             state_slot = r["新建slot"]
+            created_slot = r["新建slot"]
             break
     resp = _build_response(slot, valid, False, sm.rounds_until_save(state_slot), results)
-    # 无界面 → 需 GM 推演：补区域场景图供 GM 设计路线/移动；GM 据此下调 judge。
-    # 有界面（子界面/弹窗/exploration-ui）→ 前端直接渲染，不补区域场景图。
+    # 无界面 → 需 GM 推演：补区域提示与区域人物供 GM 设计路线/登场角色；GM 据此下调 judge。
+    # 有界面（子界面/弹窗/exploration-ui）→ 前端直接渲染，不补区域信息。
     if resp.get("界面") is None:
-        slot_explore = sm.read_explore(state_slot) or {} if state_slot != slot else explore
+        # 建档路径 handler 已自行落盘新 slot 的 explore，进程开头的内存 explore 为空，须重读
+        slot_explore = (sm.read_explore(state_slot) or {}) if created_slot is not None else explore
         resp.update(_region_info(state_slot, slot_explore))
         # 推演前强制判定思考提示：GM 下调 judge 前必先回溯本回合是否该判
         resp["GM提示"] = "推演剧情前先自问：本回合剧情发展是否依赖角色某项技艺/属性水平高低？涉及即先调 wuxia_check（不可用时 engine check）掷骰，并据结果推演。"
@@ -363,15 +365,95 @@ def _settle_go(slot, actions=None):
         _write_tips(state_slot, results)
     return _attach_quest_hints(resp, quest_hints)
 
+def _dead_element_hits(elements):
+    """死亡角色红线核对：返回场景要素主体命中的死亡角色 [(主体, 角色名), ...]。
+
+    主体匹配取最长角色名（避免短名误伤更长的相似名）；「角色名+的+…」视为
+    尸体/遗物/旧地等非正面登场表述，放行。校验先于状态变更落盘，
+    本轮才判死亡的角色尚未标记，可正常同轮收尾登场。"""
+    try:
+        chars = dq.load_all("角色")
+    except (JsonMissingError, JsonReadError) as exc:
+        if isinstance(exc, JsonReadError):
+            warn_json_read(exc)
+        return []
+    dead = {name for name, rec in chars.items() if rec.get("死亡")}
+    if not dead:
+        return []
+    names = sorted(chars, key=len, reverse=True)  # 最长优先：首个命中的即最佳匹配
+    hits = []
+    for element in elements:
+        sub = str(element.get("主体") or "").strip()
+        if not sub:
+            continue
+        matched = next((n for n in names
+                        if sub == n or sub.startswith(n) or sub.endswith(n)), None)
+        if matched not in dead:
+            continue
+        if sub == matched:
+            hits.append((sub, matched))
+        elif sub.startswith(matched):
+            if not sub[len(matched):].startswith("的"):
+                hits.append((sub, matched))
+        else:  # 头衔前缀引用（如「水寨头领薛四彭」）；「…的+名」视为指代遗存放行
+            if not sub[:-len(matched)].endswith("的"):
+                hits.append((sub, matched))
+    return hits
+
+def _player_element_hits(slot, elements, changes=None):
+    """玩家主控红线核对：返回场景要素主体命中主控角色名的 [主体, ...]。
+
+    主控状态由队伍面板承载，重复申报为要素会挤占要素位并误导交互。
+    主体匹配与死亡红线同口径：最长角色名优先（避免短名误伤相似长名）；
+    「角色名+的+…」视为随身物件等非本人表述，放行。本轮 写角色 的新名
+    一并纳入消歧（校验先于落盘，同轮新登场的相似长名不误伤）。"""
+    player = str((sm.read_meta(slot) or {}).get("角色名") or "").strip()
+    if not player:
+        return []
+    try:
+        chars = dq.load_all("角色")
+    except (JsonMissingError, JsonReadError) as exc:
+        if isinstance(exc, JsonReadError):
+            warn_json_read(exc)
+        return []
+    if player not in chars:
+        return []
+    names = set(chars)
+    for c in changes or []:
+        if isinstance(c, dict) and c.get("类型") == "写角色" and isinstance(c.get("角色"), dict):
+            new_name = str(c["角色"].get("名称") or "").strip()
+            if new_name:
+                names.add(new_name)
+    ordered = sorted(names, key=len, reverse=True)  # 最长优先：首个命中的即最佳匹配
+    hits = []
+    for element in elements:
+        sub = str(element.get("主体") or "").strip()
+        if not sub:
+            continue
+        matched = next((n for n in ordered
+                        if sub == n or sub.startswith(n) or sub.endswith(n)), None)
+        if matched != player:
+            continue
+        if sub == matched:
+            hits.append(sub)
+        elif sub.startswith(matched):
+            if not sub[len(matched):].startswith("的"):
+                hits.append(sub)
+        else:  # 头衔前缀引用；「…的+名」视为指代随身物件放行
+            if not sub[:-len(matched)].endswith("的"):
+                hits.append(sub)
+    return hits
+
 def _settle_judge(slot, changes=None, narrative=None):
     """engine judge：GM 基于 go 的既成状态（go 已落盘机制后果）推演后，裁定落盘。
 
     changes：行为数组，元素为两类——
       · 状态变更条目（{类型:铜钱/经验/关系度/物品/装备/在队/气血/内力/死亡/时间/抵达/
-        登记场景/事实/线索-采用草稿/线索-发现/武学/体力/战斗-结束...}），经 _apply_changes 裁定
+        场景-采用草稿/事实/线索-采用草稿/线索-发现/武学/体力/战斗-结束...}），经 _apply_changes 裁定
         （战斗-结束：战斗整场耗时耗力——体力-20/时间+8刻，自动结算，战后处置必带）；
       · 独立 action 条目（战斗-开始/战斗-触发），单独 dispatch 产出 battle-ui。
-    narrative：顶层叙事字段 {当前剧情(必填)/场景要素/经历概括}。
+    narrative：顶层叙事字段 {当前剧情(必填)/场景要素(必填非空，战斗类豁免)/经历概括/提及地点(必填，可为空数组)}。
+    提及地点：本轮叙事新提及、玩家可前往的「区域·场景」全名数组；正式地图或本轮场景草稿中未登记则打回。
     任一状态变更非法 → 整体回滚本轮 judge（不落盘），go 已落盘的机制后果不受影响。
     仅返回 exploration-ui 的结算成功才推进交互轮次并可能自动存档（与状态变更内容无关）；
     返回 battle-ui / exploration-battle-ui 的结算成功不推进轮次、不自动存档。
@@ -396,6 +478,14 @@ def _settle_judge(slot, changes=None, narrative=None):
                                error="judge 缺 `当前剧情`（本回合拟展示给玩家的剧情描写，必填，不可为空；战斗类 judge 可填空）",
                                gm_error=True)
     elements = narrative.get("场景要素")
+    # 场景要素为强制申报：缺省或空数组会让玩家界面沿用上一轮旧要素
+    # （功能场景甚至残留过期特殊指令），非战斗 judge 必须显式重报本轮非空要素；
+    # 战斗类 judge 豁免（界面由战报直出，同 当前剧情/提及地点 的豁免口径）。
+    if not has_battle_entry and not elements:
+        return _build_response(slot, [], False, sm.rounds_until_save(slot), [],
+                               error="judge 须传非空「场景要素」数组（本轮可见的人/物/环境，"
+                                     "每项 {主体, 描写}；不得缺省或传空数组，无变化也须重报现状）",
+                               gm_error=True)
     if elements is not None:
         elements = _norm_elements(elements)
         if elements is None:
@@ -411,6 +501,30 @@ def _settle_judge(slot, changes=None, narrative=None):
                            f"{_SCENE_ELEMENT_DESCRIPTION_LIMIT}字（当前{len(description)}字）"),
                     gm_error=True,
                 )
+
+    # 死亡角色红线：主体命中 死亡=true 的角色即打回（死于本轮者尚未落盘，可同轮收尾登场）；
+    # 尸体/遗物/旧地等以「角色名+的+…」主体表述放行。
+    if elements:
+        dead_hits = _dead_element_hits(elements)
+        if dead_hits:
+            detail = "；".join(f"【{sub}】命中死亡角色【{name}】" for sub, name in dead_hits)
+            return _build_response(slot, [], False, sm.rounds_until_save(slot), [],
+                                   error=f"死亡角色不得申报为场景要素主体：{detail}——"
+                                         "死亡角色不得正面登场；若为尸体/遗物/旧地等，"
+                                         "请改用「角色名+的+…」主体表述、名称写入描写",
+                                   gm_error=True)
+
+    # 玩家主控红线：主控状态由队伍面板承载，要素主体不得再申报主控本人
+    #（随身物件以「角色名+的+…」主体表述放行，与死亡红线同口径）。
+    if elements:
+        player_hits = _player_element_hits(slot, elements, changes)
+        if player_hits:
+            detail = "；".join(f"【{sub}】" for sub in player_hits)
+            return _build_response(slot, [], False, sm.rounds_until_save(slot), [],
+                                   error=f"玩家主控不得申报为场景要素主体：{detail}——"
+                                         "主控状态由队伍面板承载，请勿重复申报；"
+                                         "若指随身物件，请改用「角色名+的+…」主体表述",
+                                   gm_error=True)
 
     # 判定留痕核对（应判尽判红线）：非战斗 judge 且有剧情文本时，核对本轮 check.json
     # 记录的判定提示是否都已嵌入剧情文本；缺失=GM 掷骰却未在叙事带出，须回退补上。
@@ -435,6 +549,53 @@ def _settle_judge(slot, changes=None, narrative=None):
             battle_entries.append(c)
         else:
             change_entries.append(c)
+
+    # 提及地点自查核对：非战斗轮必须显式申报「提及地点」（可为空数组，不得缺省），
+    # 条目须为「区域·场景」全名。正式地图或本轮已采用草稿中存在则通过；否则打回，
+    # 不可达/无需涉足则移出申报。战斗类 judge 跳过（同判定留痕：战时不增负担）。
+    if not has_battle_entry:
+        reported = narrative.get("提及地点")
+        if not isinstance(reported, list):
+            return _build_response(slot, [], False, sm.rounds_until_save(slot), [],
+                                   error="judge 须传「提及地点」数组（本轮叙事新提及、玩家可前往的"
+                                         "「区域·场景」全名，可为空 []，不得缺省）",
+                                   gm_error=True)
+        names = list(dict.fromkeys(str(x).strip() for x in reported if str(x).strip()))
+        malformed = [name for name in names if "·" not in name]
+        if malformed:
+            return _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error=f"提及地点须为「区域·场景」全名：{'、'.join(malformed)}——请补全区域前缀后重试",
+                gm_error=True)
+        registered_now = set()
+        if any(c.get("类型") == "场景-采用草稿" for c in change_entries):
+            try:
+                scene_batch = _scene_drafts.select_draft(slot)
+            except (JsonReadError, ValueError) as exc:
+                detail = exc.detail if isinstance(exc, JsonReadError) else str(exc)
+                return _build_response(
+                    slot, [], False, sm.rounds_until_save(slot), [],
+                    error=f"场景草稿读取失败，须重新 scene-prepare（{detail}）",
+                    gm_error=True,
+                )
+            registered_now.update(
+                (operation.get("区域"), operation.get("场景"))
+                for operation in scene_batch["operations"]
+                if operation.get("类型") == "登记场景"
+            )
+        unregistered = []
+        for name in names:
+            region, _, scene = name.partition("·")
+            if ((region, scene) not in registered_now
+                    and scene not in (sc.merged_scenes(slot, region) or {})):
+                unregistered.append(name)
+        if unregistered:
+            return _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error=f"提及地点未登记：{'、'.join(unregistered)}——若允许玩家前往，请先用 "
+                      f"scene-prepare 准备登记并在 judge 加入「场景-采用草稿」；若不可达或无需涉足，"
+                      f"请将其从「提及地点」中移除",
+                gm_error=True)
 
     # go 的机制后果提示在前：judge 每回合读 tips.json（成功消费后清空，失败保留重调），
     # 把 go 的变更行拼到本次 结算 最前。文件由 go 单方覆盖更新（有则写入、无则空数组）。
@@ -492,8 +653,8 @@ def _settle_judge(slot, changes=None, narrative=None):
         if elements is not None:
             cur_pos = explore.get("当前位置") or ""
             cur_region, _, cur_scene = cur_pos.partition("·")
-            stype = sc.scene_type(slot, cur_region, cur_scene)
-            npc = sc.scene_npc(slot, cur_region, cur_scene)
+            stype = sc.scene_type(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
+            npc = sc.scene_npc(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
             req_cmds = _SCENE_TYPE_COMMANDS.get(stype) if stype else None
             command_elements = [e for e in elements if e.get("特殊指令")]
 
@@ -544,7 +705,7 @@ def _settle_judge(slot, changes=None, narrative=None):
             session.add_hints([{
                 "类型": "任务扩展", "线索": quest_name, "扩展点": node_id,
                 "提示": (f"任务【{quest_name}】已行进至扩展点【{node_id}】，"
-                         "战斗结束后须先 quest-prepare 准备扩展再继续推进"),
+                         "战斗结束后须先 quest-prepare 准备扩展，或以 关闭 操作强关该扩展点"),
             } for quest_name, node_id in gates])
         elif gates:
             described = "；".join(
@@ -554,7 +715,8 @@ def _settle_judge(slot, changes=None, narrative=None):
                 slot, [], False, sm.rounds_until_save(slot), results,
                 error=(f"{described}已到达但未扩展：本轮 judge 打回，"
                        "须先以 quest-prepare 准备该扩展点的扩展蓝图，"
-                       "并在 judge 行为中经 线索-采用草稿 采纳后重新提交"),
+                       "并在 judge 行为中经 线索-采用草稿 采纳后重新提交；"
+                       "若该方向无继续推演必要，可以 关闭 操作强关该扩展点"),
                 gm_error=True,
             )
 
@@ -613,7 +775,8 @@ def _settle_judge(slot, changes=None, narrative=None):
     else:
         sm.write_explore(slot, explore, preserve_narrative=True)
 
-    # 只在触发自动存档时附加全量经历概括+线索栏，供 GM 周期性回顾剧情（否则不带，冗余大）
+    # GM 是经历概括的作者、任务通知每轮都在结算里；历史保留工具组后周期性回显全量
+    # 概括/线索栏已成冗余，需要时用 查看线索 随时查询（加载存档轮仍随 go 返回以恢复上下文）
 
     # 战后处置落盘完成：清理该 slot 的战斗临时文件（避免「返回游戏」误判战斗中）
     _clear_battle_tmp(slot)
@@ -623,7 +786,7 @@ def _settle_judge(slot, changes=None, narrative=None):
     if saved:
         base["GM参考"] = _gm_autosave_hint(slot)
     ctx = {"explore": explore, "narrative": {"当前剧情": plot, "场景要素": elements},
-           "results": results, "with_summary": saved}
+           "results": results}
     base.update(build_ui(slot, "exploration-ui", ctx))
     if "界面" in base:
         base["渲染模式"] = render_mode()
@@ -664,9 +827,8 @@ def go(slot, actions=None):
                 return _turn_error(
                     slot,
                     "go_already_committed",
-                    "上一条 go 已完成机制结算，须继续完成 judge，不得重复执行 go",
+                    "上一条 go 已完成机制结算，须沿用其返回继续 judge，不得重复执行 go",
                     state,
-                    turn.get("go_result"),
                 )
             return _turn_error(
                 slot,
@@ -694,7 +856,6 @@ def go(slot, actions=None):
         state_slot,
         _turn_state.AWAITING_JUDGE,
         origin=_turn_origin(actions),
-        go_result=result,
     )
     return _with_turn_state(result, new_state["state"])
 
@@ -706,15 +867,16 @@ def judge(slot, payload=None):
     一律报错，避免静默忽略。"""
     payload = payload or {}
     if not sm._slot_writable(slot):
-        allowed_top = {"槽位", "行为", "当前剧情", "场景要素", "经历概括"}
+        allowed_top = {"槽位", "行为", "当前剧情", "场景要素", "经历概括", "提及地点"}
         extra = set(payload.keys()) - allowed_top
         if extra:
             return _build_response(slot, [], False, sm.rounds_until_save(slot), [],
                                    error=f"judge 顶层出现非预期字段：{('、'.join(sorted(extra)))}。"
-                                         f"仅允许 行为/当前剧情/场景要素/经历概括；"
+                                         f"仅允许 行为/当前剧情/场景要素/经历概括/提及地点；"
                                          f"状态变更（如线索）须放「行为」数组内",
                                    gm_error=True)
-        narrative = {k: payload[k] for k in ("当前剧情", "场景要素", "经历概括") if k in payload}
+        narrative = {k: payload[k] for k in ("当前剧情", "场景要素", "经历概括", "提及地点")
+                     if k in payload}
         return _settle_judge(slot, payload.get("行为"), narrative)
 
     turn = _turn_state.read_state(slot)
@@ -752,12 +914,61 @@ def judge(slot, payload=None):
             state,
         )
 
-    _ALLOWED_TOP = {"槽位", "行为", "当前剧情", "场景要素", "经历概括"}
+    if state == _turn_state.AWAITING_JUDGE:
+        direct_scene = [
+            item.get("类型") for item in items
+            if isinstance(item, dict) and item.get("类型") in {"登记场景", "隔离地点"}
+        ]
+        if direct_scene:
+            result = _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error="judge 不再直接接受「登记场景/隔离地点」；请先 scene-prepare，"
+                      "再在 judge 行为中提交「场景-采用草稿」",
+                gm_error=True,
+            )
+            return _with_turn_state(result, state)
+        adoptions = [
+            item for item in items
+            if isinstance(item, dict) and item.get("类型") == "场景-采用草稿"
+        ]
+        if len(adoptions) > 1:
+            result = _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error="judge 每轮最多提交一次「场景-采用草稿」", gm_error=True,
+            )
+            return _with_turn_state(result, state)
+        try:
+            scene_draft = _scene_drafts.read_draft(slot)
+        except JsonReadError as exc:
+            result = _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error=f"场景草稿读取失败，须重新 scene-prepare（{exc.detail}）", gm_error=True,
+            )
+            return _with_turn_state(result, state)
+        has_scene_draft = bool(scene_draft.get("operations"))
+        if has_scene_draft and not adoptions:
+            result = _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error="本轮已有未采纳的场景草稿；请在 judge 行为中加入「场景-采用草稿」，"
+                      "或用 scene-prepare 传空「场景」数组清除草稿",
+                gm_error=True,
+            )
+            return _with_turn_state(result, state)
+        if adoptions and not has_scene_draft:
+            result = _build_response(
+                slot, [], False, sm.rounds_until_save(slot), [],
+                error="本轮没有可采用的场景草稿，请先 scene-prepare", gm_error=True,
+            )
+            return _with_turn_state(result, state)
+        if adoptions:
+            actions = adoptions + [item for item in items if item not in adoptions]
+
+    _ALLOWED_TOP = {"槽位", "行为", "当前剧情", "场景要素", "经历概括", "提及地点"}
     extra = set(payload.keys()) - _ALLOWED_TOP
     if extra:
         result = _build_response(slot, [], False, sm.rounds_until_save(slot), [],
                                  error=f"judge 顶层出现非预期字段：{('、'.join(sorted(extra)))}。"
-                                       f"仅允许 行为/当前剧情/场景要素/经历概括；"
+                                       f"仅允许 行为/当前剧情/场景要素/经历概括/提及地点；"
                                        f"状态变更（如线索）须放「行为」数组内",
                                  gm_error=True)
         return _with_turn_state(result, state)
@@ -770,7 +981,8 @@ def judge(slot, payload=None):
                                        + OPENING_ERA_TEMPLATE,
                                  gm_error=True)
         return _with_turn_state(result, state)
-    narrative = {k: payload[k] for k in ("当前剧情", "场景要素", "经历概括") if k in payload}
+    narrative = {k: payload[k] for k in ("当前剧情", "场景要素", "经历概括", "提及地点")
+                 if k in payload}
     judge_round = sm.read_round(slot)
     result = _settle_judge(slot, actions, narrative)
     if result.get("错误"):
@@ -780,12 +992,15 @@ def judge(slot, payload=None):
     except (JsonReadError, OSError):
         # judge 权威状态已经提交；清理失败不能把成功伪装成失败，旧草稿仍受阶段/round 门禁约束。
         pass
+    try:
+        _scene_drafts.clear_round(slot, judge_round)
+    except (JsonReadError, OSError):
+        pass
     if result.get("界面") == "exploration-battle-ui":
         new_state = _turn_state.write_state(
             slot,
             _turn_state.AWAITING_BATTLE_START,
             origin=turn.get("origin"),
-            go_result=turn.get("go_result"),
         )
     else:
         new_state = _turn_state.reset_state(slot)
@@ -857,6 +1072,115 @@ def random_event(payload=None):
     _dq.set_slot(slot)
     result = _check.run_random_event(payload.get("基础成功率", 15))
     return _with_turn_state(result, state) if state else result
+
+
+def scene_prepare(payload=None):
+    """批量预校验场景登记/隔离/重连，并保存当前 round 最新草稿。"""
+    payload = {} if payload is None else payload
+    if not isinstance(payload, dict):
+        return {"ok": False, "错误": "scene-prepare stdin 须为 JSON 对象"}
+    slot = payload.get("槽位")
+    if not isinstance(slot, int) or isinstance(slot, bool) or slot <= 0:
+        return {"ok": False, "错误": "scene-prepare 缺少有效正式 槽位"}
+    turn = _turn_state.read_state(slot)
+    state = turn["state"]
+    if state != _turn_state.AWAITING_JUDGE:
+        result = _turn_error(
+            slot,
+            "scene_prepare_not_expected",
+            "scene-prepare 只允许在 go 已完成、等待 judge 时调用",
+            state,
+        )
+        result["ok"] = False
+        return result
+
+    extra = set(payload) - {"槽位", "场景"}
+    if extra:
+        return _with_turn_state({
+            "ok": False, "槽位": slot,
+            "错误": f"scene-prepare 出现非预期字段：{'、'.join(sorted(extra))}",
+        }, state)
+    items = payload.get("场景")
+    if not isinstance(items, list):
+        return _with_turn_state({
+            "ok": False, "槽位": slot, "错误": "scene-prepare 场景 须为数组",
+        }, state)
+
+    round_number = sm.read_round(slot)
+    if not items:
+        _scene_drafts.write_batch(slot, round_number, [])
+        return _with_turn_state({"ok": True, "槽位": slot, "场景": [], "已清除": True}, state)
+
+    normalized = []
+    summaries = []
+    for index, item in enumerate(items, 1):
+        prefix = f"scene-prepare 第 {index} 项"
+        if not isinstance(item, dict):
+            return _with_turn_state({"ok": False, "槽位": slot,
+                                     "错误": f"{prefix}须为对象"}, state)
+        operation = item.get("操作")
+        if operation == "登记":
+            allowed = {"操作", "区域", "场景", "方位出口", "功能类型", "功能NPC"}
+            mutation = {"类型": "登记场景", **{k: copy.deepcopy(v) for k, v in item.items()
+                                              if k != "操作"}}
+            operations = [mutation]
+        elif operation == "隔离":
+            allowed = {"操作", "区域", "场景"}
+            operations = [{"类型": "隔离地点", "区域": item.get("区域"),
+                           "场景": item.get("场景")}]
+        elif operation == "重连":
+            allowed = {"操作", "区域", "场景", "方位出口"}
+            exits = item.get("方位出口")
+            if not isinstance(exits, dict) or not exits:
+                return _with_turn_state({"ok": False, "槽位": slot,
+                                         "错误": f"{prefix}重连须提供非空 方位出口"}, state)
+            operations = [
+                {"类型": "隔离地点", "区域": item.get("区域"), "场景": item.get("场景")},
+                {"类型": "登记场景", "区域": item.get("区域"), "场景": item.get("场景"),
+                 "方位出口": copy.deepcopy(exits)},
+            ]
+        else:
+            return _with_turn_state({"ok": False, "槽位": slot,
+                                     "错误": f"{prefix} 操作须为 登记、隔离 或 重连"}, state)
+        item_extra = set(item) - allowed
+        if item_extra:
+            return _with_turn_state({
+                "ok": False, "槽位": slot,
+                "错误": f"{prefix}出现非预期字段：{'、'.join(sorted(item_extra))}",
+            }, state)
+        if not item.get("区域") or not item.get("场景"):
+            return _with_turn_state({"ok": False, "槽位": slot,
+                                     "错误": f"{prefix}须指定 区域、场景"}, state)
+        normalized.extend(operations)
+        summaries.append({"操作": operation, "区域": item["区域"], "场景": item["场景"]})
+
+    staged = {}
+    type_staged = {}
+    # 同批次登记的场景名（按区域）：出口目标可前向引用批次内任意登记项，书写顺序无关
+    batch_targets = {}
+    for operation in normalized:
+        if operation["类型"] == "登记场景":
+            batch_targets.setdefault(operation.get("区域"), set()).add(operation.get("场景"))
+    validation = []
+    for operation in normalized:
+        if operation["类型"] == "登记场景":
+            result = sc.register_scene(slot, operation, staged, type_staged,
+                                        known_targets=batch_targets.get(operation.get("区域")))
+        else:
+            result = sc.isolate_scene(slot, operation, staged)
+        validation.append(result)
+        if not result.get("ok"):
+            return _with_turn_state({
+                "ok": False, "槽位": slot,
+                "错误": "scene-prepare 场景规划预校验失败：" + result.get("msg", "未知错误"),
+            }, state)
+
+    _scene_drafts.write_batch(slot, round_number, normalized)
+    remaining = [r.get("剩余配额") for r in validation if r.get("剩余配额") is not None]
+    result = {"ok": True, "槽位": slot, "场景": summaries}
+    if remaining:
+        result["剩余配额"] = remaining[-1]
+    return _with_turn_state(result, state)
 
 
 def _quest_definition_summary(definition):
@@ -940,9 +1264,13 @@ def quest_prepare(payload=None):
             allowed = {"操作", "蓝图"}
             hidden = False
             kind = "modify"
+        elif operation == "关闭":
+            allowed = {"操作", "蓝图"}
+            hidden = False
+            kind = "close"
         else:
             return _with_turn_state({"ok": False, "槽位": slot,
-                                     "错误": f"{prefix} 操作须为 创建、扩展 或 修改"}, state)
+                                     "错误": f"{prefix} 操作须为 创建、扩展、修改 或 关闭"}, state)
         item_extra = set(item) - allowed
         if item_extra:
             return _with_turn_state({
@@ -959,13 +1287,29 @@ def quest_prepare(payload=None):
         if normalized_name and normalized_name in seen_names:
             return _with_turn_state({"ok": False, "槽位": slot,
                                      "错误": f"任务草稿批次含重复线索名称【{normalized_name}】"}, state)
+        if kind == "close":
+            extra_keys = set(raw) - {"名称", "节点", "描述"}
+            if extra_keys:
+                return _with_turn_state({"ok": False, "槽位": slot,
+                                         "错误": f"{prefix}关闭蓝图仅允许 名称/节点/描述 字段"}, state)
+            if not normalized_name:
+                return _with_turn_state({"ok": False, "槽位": slot,
+                                         "错误": f"{prefix}关闭蓝图须提供非空 名称"}, state)
+            if not isinstance(raw.get("描述"), str) or not raw["描述"].strip():
+                return _with_turn_state({"ok": False, "槽位": slot,
+                                         "错误": f"{prefix}关闭蓝图须提供非空 描述"}, state)
+        definition = None
         try:
             if kind == "create":
                 definition = create_quest(
-                    world_facts, quest_state, copy.deepcopy(raw), hidden=hidden
+                    world_facts, quest_state, copy.deepcopy(raw), hidden=hidden,
+                    incremental=True,
                 )
             elif kind == "extend":
-                definition = extend_quest(world_facts, quest_state, copy.deepcopy(raw))
+                definition = extend_quest(world_facts, quest_state, copy.deepcopy(raw),
+                                          incremental=True)
+            elif kind == "close":
+                validate_close_extension(quest_state, normalized_name, raw.get("节点"))
             else:
                 definition = modify_quest_rewards(world_facts, quest_state, copy.deepcopy(raw))
         except (KeyError, TypeError, ValueError) as exc:
@@ -975,24 +1319,31 @@ def quest_prepare(payload=None):
                 "错误": f"{prefix}任务蓝图预校验失败：{exc}",
             }, state)
 
-        quest_name = definition["name"]
+        quest_name = definition["name"] if definition is not None else normalized_name
         if quest_name in seen_names:
             return _with_turn_state({"ok": False, "槽位": slot,
                                      "错误": f"任务草稿批次含重复线索名称【{quest_name}】"}, state)
         seen_names.add(quest_name)
-        summary = _quest_definition_summary(definition)
+        if kind == "close":
+            record_version = quest_state["definitions"][quest_name]["version"]
+            summary = {"线索": quest_name, "关闭节点": raw["节点"].strip(),
+                       "描述": raw["描述"].strip()}
+        else:
+            record_version = definition["version"]
+            summary = _quest_definition_summary(definition)
         records.append({
             "quest_name": quest_name,
             "kind": kind,
             "payload": copy.deepcopy(raw),
             "hidden": hidden,
-            "content_hash": _quest_drafts.definition_hash(kind, definition, hidden),
-            "definition_version": definition["version"],
+            "content_hash": _quest_drafts.definition_hash(
+                kind, definition if definition is not None else raw, hidden),
+            "definition_version": record_version,
             "summary": copy.deepcopy(summary),
         })
         prepared.append({
             "操作": operation,
-            "版本": definition["version"],
+            "版本": record_version,
             **summary,
         })
 
@@ -1143,6 +1494,15 @@ def _cli(argv):
         result = random_event(payload)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if "结果" in result else 2
+    if cmd == "scene-prepare":
+        try:
+            payload = json.loads(sys.stdin.read())
+        except json.JSONDecodeError as e:
+            print(json.dumps({"错误": f"scene-prepare: JSON 解析失败（{e}）"}, ensure_ascii=False, indent=2))
+            return 2
+        result = scene_prepare(payload)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2 if isinstance(result, dict) and result.get("错误") else 0
     if cmd == "quest-prepare":
         try:
             payload = json.loads(sys.stdin.read())
@@ -1181,7 +1541,7 @@ def _cli(argv):
         result = judge(slot, payload)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    print("未知命令: " + cmd + "\n可用: go / judge / check / random-event / quest-prepare / query / setting / recommend / map-query", file=sys.stderr)
+    print("未知命令: " + cmd + "\n可用: go / judge / check / random-event / scene-prepare / quest-prepare / query / setting / recommend / map-query", file=sys.stderr)
     return 2
 
 

@@ -6,13 +6,12 @@
 GM 只原样透传 `渲染文本`，不再自行筛选字段组装或润色战报。
 
 模式规则（WUXIA_RPG_RENDER_MODULE，经 common.render_mode 归一，未设置=LLM）：
-- dsh：目标 UI 固定 `渲染文本=""`（前端卡片消费结构化字段，不重复出正文）；
-- 其余模式（LLM/WEB_UI/…）：按模板生成完整 Markdown。
+- 所有模式（dsh/LLM/WEB_UI/…）均按模板生成完整 Markdown。
 
 judge 的 exploration-ui+错误 是 GM 自检信号，不生成玩家界面文本。
 """
 from common import dao as dq
-from common.render_mode import is_dsh_mode, render_mode
+from common.render_mode import render_mode
 
 # 引擎直出 Markdown 的界面白名单
 MARKDOWN_UI_IDS = frozenset({
@@ -780,24 +779,25 @@ RENDERERS = {
 }
 
 
-# ----------------------------- 统一挂载入口 -----------------------------
-
 def attach_render_text(response):
     """在最终 response 上挂载 渲染文本（原位并返回）。
 
     - 非目标 UI：原样返回，不加字段；
-    - dsh：目标 UI 固定 渲染文本=""，不执行模板拼接；
-    - 其余模式：按模板生成完整 Markdown；
+    - LLM 模式：按模板生成完整 Markdown，GM 原样输出；
+    - dsh/WEB_UI 模式：结构化卡片由前端直出，不生成渲染文本（GM 直接输出当前剧情）；
     - exploration-ui 带 错误（judge 自检失败）：GM 修正重试路径，不生成玩家界面文本。
     """
     ui = response.get("界面")
     if ui not in MARKDOWN_UI_IDS:
         return response
     response["渲染模式"] = render_mode()
-    if is_dsh_mode():
-        response["渲染文本"] = ""
-        return response
     if ui == "exploration-ui" and response.get("错误"):
+        return response
+    if render_mode() != "LLM":
         return response
     response["渲染文本"] = RENDERERS[ui](response)
     return response
+
+
+# ----------------------------- 统一挂载入口 -----------------------------
+# attach_render_text 定义于上方 RENDERERS 之后。

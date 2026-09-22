@@ -24,13 +24,43 @@ from engine import OPENING_ERA_TEMPLATE
 from store import save_manager as sm
 from store import turn_state
 from store import quest_drafts
+from store import scene_drafts
+from world import scene as sc
 
 FAILED = []
 
+_BATTLE_JUDGE_ACTIONS = {"战斗-开始", "战斗-触发", "战斗-推进"}
 
-def run_engine(slot, payload, cmd="go", save_dir=None):
+
+def judge_elements(slot, save_dir, changes=None):
+    """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」的目的地
+    （功能NPC校验在变更应用后按新位置执行）；功能场景须含绑定功能NPC与全套特殊指令。"""
+    position = None
+    for action in changes or []:
+        if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
+            position = action.get("位置") or action.get("目的地")
+    if not position:
+        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+    region, _, scene = position.partition("·")
+    stype = sc.scene_type(slot, region, scene)
+    npc = sc.scene_npc(slot, region, scene)
+    commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
+    if npc and commands:
+        return [{"主体": npc, "描写": "当值",
+                 "特殊指令": [{"名称": c, "可用": True} for c in commands]}]
+    return [{"主体": "四周", "描写": "一切如常"}]
+
+
+def run_engine(slot, payload, cmd="go", save_dir=None, fill_elements=True):
     """subprocess 调 engine.py go/judge，stdin 传 JSON，返回解析后的 dict。"""
     payload = {"槽位": slot, **payload}
+    if cmd == "judge":
+        payload.setdefault("提及地点", [])
+        # 场景要素为非战斗 judge 必填：测试骨架按落定位置自动补全（校验用例传 fill_elements=False）
+        battle = any(isinstance(a, dict) and a.get("类型") in _BATTLE_JUDGE_ACTIONS
+                     for a in payload.get("行为") or [])
+        if fill_elements and "场景要素" not in payload and not battle:
+            payload["场景要素"] = judge_elements(slot, save_dir, payload.get("行为"))
     env = dict(os.environ)
     if save_dir:
         env["WUXIA_RPG_SAVE_DIR"] = save_dir
@@ -56,16 +86,16 @@ def check(name, cond, detail=""):
 
 
 def char(name, faction="江湖"):
-    """构造最小可用角色 dict（含建档所需字段）。"""
+    """构造最小合规角色 dict（通过 character_schema 严格校验）。"""
     return {
-        "名称": name, "阵营": faction, "性别": "男", "年岁": 20, "武功定位": "武者",
-        "品性": {"仁善": 50, "义气": 50, "胆魄": 50, "野心": 0, "底线": 50, "智计": 50,
-                 "重利": 0, "守序": 50, "纵欲": 0, "信仰": 0},
+        "名称": name, "阵营": faction, "性别": "男", "年龄": 20, "武功定位": "武者",
         "一级属性": {"根骨": 10, "力道": 10, "身法": 10, "内功": 10},
-        "极性": {"根骨": 50, "力道": 50, "身法": 50, "内功": 50},
+        "极性": {"内功": "中", "力道": "中", "身法": "中", "根骨": "中"},
         "铜钱": 1000, "物品": ["玉佩"],
-        "武学": [], "武艺": {"搏击": 10, "剑法": 0, "刀法": 0, "长兵": 0, "奇门": 0, "暗器": 0},
-        "技艺": {}, "装备": {},
+        "武学": [{"名称": "百缠手", "等级": 1}],
+        "武艺": {"搏击": 10, "剑法": 0, "刀法": 0, "长兵": 0, "奇门": 0, "暗器": 0},
+        "技艺": {"音律": 0, "弈棋": 0, "诗书": 0, "绘画": 0, "医术": 0, "博物": 0},
+        "装备": {}, "人设": "测试角色",
     }
 
 
@@ -150,6 +180,17 @@ def main():
         check("标题创建草稿无状态返回",
               wizard.get("标题状态") == "创建-立名" and isinstance(wizard.get("创建草稿"), dict),
               f"wizard={json.dumps(wizard, ensure_ascii=False)[:200]}")
+        # 严格 schema 校验：误名字段（同级极性）建档打回，不占用槽位
+        bad_hero = char("误名侠")
+        bad_hero["同级极性"] = bad_hero.pop("极性")
+        before_slots = len(sm.list_all_saves(save_dir=tmp))
+        r = run_engine(create_slot, {"行为": [{"类型": "创建角色", "角色": bad_hero}]}, save_dir=tmp)
+        check("建档拒绝误名极性字段",
+              r.get("错误") is None and any("同级极性" in str(x.get("msg") or "")
+                                            for x in r.get("结算") or []),
+              f"r={json.dumps(r, ensure_ascii=False)[:200]}")
+        check("schema 打回不占用槽位", len(sm.list_all_saves(save_dir=tmp)) == before_slots,
+              f"{before_slots} -> {len(sm.list_all_saves(save_dir=tmp))}")
         r = run_engine(create_slot, {"行为": [{"类型": "创建角色", "角色": char("沈孤鸿")}]}, save_dir=tmp)
         check("建档成功无错", r.get("错误") is None and "_rc" not in r, f"r={json.dumps(r, ensure_ascii=False)[:200]}")
         slot = (r.get("结算") or [{}])[0].get("新建slot")
@@ -228,9 +269,13 @@ def main():
               f"missing_target={json.dumps(missing_target, ensure_ascii=False)[:250]}")
         g = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
         check("go 交谈观察无界面（需调 judge）", "界面" not in g, f"g={list(g.keys())}")
+        check("无界面 go 带区域提示不带全图",
+              bool(g.get("区域提示")) and "区域场景" not in g,
+              f"提示={g.get('区域提示')}, 键={list(g.keys())}")
         check("go 后进入待 judge", g.get("turn_state") == turn_state.AWAITING_JUDGE, f"g={g}")
         duplicate = run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, save_dir=tmp)
-        check("重复 go 被阶段门禁拒绝", duplicate.get("状态冲突") == "go_already_committed",
+        check("重复 go 被阶段门禁拒绝", duplicate.get("状态冲突") == "go_already_committed"
+              and "go_result" not in duplicate,
               f"duplicate={json.dumps(duplicate, ensure_ascii=False)[:200]}")
         readonly = run_engine(slot, {"行为": [{"类型": "角色信息", "角色": "沈孤鸿"}]}, save_dir=tmp)
         check("待 judge 时仍允许只读 go", readonly.get("状态冲突") is None
@@ -355,6 +400,7 @@ def main():
 
         print("== 样例4b 写角色武学校验 ==")
         empty_npc = char("无艺客")
+        empty_npc["武学"] = []
         j = run_engine(slot, {"行为": [
             {"类型": "写角色", "角色": empty_npc},
         ], "当前剧情": "无艺客出现在路旁。"}, cmd="judge", save_dir=tmp)
@@ -363,6 +409,18 @@ def main():
               f"错误={j.get('错误')}")
         check("武学为空的角色不落盘",
               dq.read_character_file("无艺客", data_dir=sm.slot_data_dir(slot, tmp)) is None)
+
+        # 严格 schema 校验：误名字段（同级极性）当场打回，不落盘
+        bad_npc = char("误名客")
+        bad_npc["同级极性"] = bad_npc.pop("极性")
+        j = run_engine(slot, {"行为": [
+            {"类型": "写角色", "角色": bad_npc},
+        ], "当前剧情": "误名客出现在路旁。"}, cmd="judge", save_dir=tmp)
+        check("写角色拒绝误名极性字段",
+              j.get("错误") is not None and "极性" in str(j.get("错误", "")),
+              f"错误={j.get('错误')}")
+        check("schema 打回的角色不落盘",
+              dq.read_character_file("误名客", data_dir=sm.slot_data_dir(slot, tmp)) is None)
 
         skilled_npc = char("有艺客")
         skilled_npc["武学"] = [{"名称": "百缠手", "等级": 1}]
@@ -377,9 +435,8 @@ def main():
 
         j = run_engine(slot, {"行为": [
             {"类型": "写角色", "角色": skilled_npc},
-            {"类型": "剧情事件", "事件": "路遇有艺客", "数据": {"地点": "路旁"}},
         ], "当前剧情": "有艺客出现在路旁。"}, cmd="judge", save_dir=tmp)
-        check("judge 接受武学非空角色与剧情事件", j.get("错误") is None,
+        check("judge 接受武学非空角色", j.get("错误") is None,
               f"错误={j.get('错误')}")
         check("武学非空的角色正常落盘",
               dq.read_character_file("有艺客", data_dir=sm.slot_data_dir(slot, tmp)) is not None)
@@ -394,9 +451,16 @@ def main():
               and after.get("当前时间") == int(before.get("当前时间", 0) or 0) + 8
               and after.get("体力") == min(100, int(before.get("体力", 0) or 0) + 10),
               f"before={before.get('当前时间'), before.get('体力')} after={after.get('当前时间'), after.get('体力')}")
+        prepared_scene = run_engine(slot, {"场景": [
+            {"操作": "登记", "区域": "苏州", "场景": "终点"},
+            {"操作": "登记", "区域": "苏州", "场景": "起点",
+             "方位出口": {"东": "终点"}},
+        ]}, cmd="scene-prepare", save_dir=tmp)
+        check("休息后可准备行旅场景", prepared_scene.get("ok") is True,
+              f"prepared={json.dumps(prepared_scene, ensure_ascii=False)[:250]}")
         j = run_engine(slot, {"行为": [
-            {"类型": "抵达", "位置": "回归行旅区·起点"},
-            {"类型": "登记场景", "区域": "回归行旅区", "场景": "起点", "方位出口": {"东": "终点"}},
+            {"类型": "场景-采用草稿"},
+            {"类型": "抵达", "位置": "苏州·起点"},
             {"类型": "物品", "操作": "增", "角色": "沈孤鸿", "名": "小还丹", "数量": 2},
             {"类型": "气血", "操作": "设", "角色": "沈孤鸿", "值": 1},
         ], "当前剧情": "沈孤鸿歇息后抵达行旅起点。"}, cmd="judge", save_dir=tmp)
@@ -407,7 +471,7 @@ def main():
         travel = run_engine(slot, {"行为": [{"类型": "远行（徒步）", "目的地": "终点"}]}, save_dir=tmp)
         after = sm.read_explore(slot, tmp) or {}
         check("徒步远行经 mutation 结算", travel.get("错误") is None
-              and after.get("当前位置") == "回归行旅区·终点"
+              and after.get("当前位置") == "苏州·终点"
               and after.get("当前时间") == int(before.get("当前时间", 0) or 0) + 4
               and after.get("体力") == int(before.get("体力", 0) or 0) - 5,
               f"travel={json.dumps(travel, ensure_ascii=False)[:200]}, after={after}")
@@ -495,28 +559,144 @@ def main():
         check("顶层校验属 gm_error", j.get("gm_error") is True or "非法" in str(j.get("错误", "")),
               f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
 
+        print("== 样例5b 场景要素必填 ==")
+        # 样例5 的 judge 失败后仍处 AWAITING_JUDGE，同一轮直接复测要素门禁
+        j = run_engine(slot, {"行为": [], "当前剧情": "未带场景要素。"}, cmd="judge",
+                       save_dir=tmp, fill_elements=False)
+        check("judge 缺场景要素被打回", "须传非空「场景要素」" in str(j.get("错误") or ""),
+              f"错误={j.get('错误')}")
+        check("缺场景要素属 gm_error 形态", j.get("界面") == "exploration-ui"
+              and j.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
+        j = run_engine(slot, {"行为": [], "当前剧情": "空场景要素。", "场景要素": []},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("judge 空场景要素被打回", "须传非空「场景要素」" in str(j.get("错误") or ""),
+              f"错误={j.get('错误')}")
+        j = run_engine(slot, {"行为": [], "当前剧情": "补齐场景要素后通过。",
+                              "场景要素": judge_elements(slot, tmp)}, cmd="judge", save_dir=tmp)
+        check("带非空场景要素的 judge 通过", j.get("错误") is None,
+              f"错误={j.get('错误')}")
+        check("通过后回到 READY", j.get("turn_state") == turn_state.READY, f"j={j.get('turn_state')}")
+        # 5b 收轮后为样例6 新开一轮（scene-prepare 须在 AWAITING_JUDGE 调用）
+        run_engine(slot, {"行为": []}, save_dir=tmp)
+
+        print("== 样例5c 死亡角色场景要素红线 ==")
+        corpse = char("亡故客")
+        corpse["武学"] = [{"名称": "百缠手", "等级": 1}]
+        j = run_engine(slot, {"行为": [{"类型": "写角色", "角色": corpse}],
+                              "当前剧情": "亡故客立于道旁。",
+                              "场景要素": judge_elements(slot, tmp) + [{"主体": "亡故客", "描写": "立于道旁"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("生者可申报为场景要素主体", j.get("错误") is None, f"错误={j.get('错误')}")
+        run_engine(slot, {"行为": []}, save_dir=tmp)  # 开新一轮：本轮判死，同轮收尾登场
+        j = run_engine(slot, {"行为": [{"类型": "死亡", "角色": "亡故客"}],
+                              "当前剧情": "亡故客倒地身亡。",
+                              "场景要素": judge_elements(slot, tmp) + [{"主体": "亡故客", "描写": "倒地身亡"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("同轮判死者可同轮登场收尾", j.get("错误") is None, f"错误={j.get('错误')}")
+        run_engine(slot, {"行为": []}, save_dir=tmp)
+        j = run_engine(slot, {"行为": [],
+                              "当前剧情": "亡故客竟又出现在眼前。",
+                              "场景要素": judge_elements(slot, tmp) + [{"主体": "亡故客", "描写": "含笑而立"},
+                                                                      {"主体": "仇家亡故客", "描写": "拦在路中"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("死亡角色裸名/头衔前缀申报被打回",
+              "死亡角色不得申报为场景要素主体" in str(j.get("错误") or ""),
+              f"错误={j.get('错误')}")
+        check("死亡红线属 gm_error 形态", j.get("界面") == "exploration-ui"
+              and j.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
+        j = run_engine(slot, {"行为": [],
+                              "当前剧情": "亡故客的尸首仍倒卧道旁。",
+                              "场景要素": judge_elements(slot, tmp) + [{"主体": "亡故客的尸首", "描写": "倒卧道旁"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("尸体表述（名+的+…）放行", j.get("错误") is None, f"错误={j.get('错误')}")
+
+        print("== 样例5d 玩家主控场景要素红线 ==")
+        # 先落盘相似长名角色 沈孤鸿声（校验先于状态变更，须在前一轮写盘）
+        run_engine(slot, {"行为": []}, save_dir=tmp)
+        j = run_engine(slot, {"行为": [{"类型": "写角色", "角色": char("沈孤鸿声")}],
+                              "当前剧情": "沈孤鸿声现身江湖。",
+                              "场景要素": judge_elements(slot, tmp) + [{"主体": "沈孤鸿声", "描写": "立于身侧"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("相似长名角色可正常申报", j.get("错误") is None, f"错误={j.get('错误')}")
+        run_engine(slot, {"行为": []}, save_dir=tmp)
+        j = run_engine(slot, {"行为": [],
+                              "当前剧情": "沈孤鸿立在当场，佩剑映着微光。",
+                              "场景要素": judge_elements(slot, tmp) + [
+                                  {"主体": "沈孤鸿", "描写": "仗剑而立"},
+                                  {"主体": "少侠沈孤鸿", "描写": "含笑而立"},
+                                  {"主体": "沈孤鸿声", "描写": "立于身侧"},
+                                  {"主体": "沈孤鸿的佩剑", "描写": "映着微光"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("主控裸名/头衔前缀申报被打回",
+              "玩家主控不得申报为场景要素主体" in str(j.get("错误") or ""),
+              f"错误={j.get('错误')}")
+        check("主控红线属 gm_error 形态", j.get("界面") == "exploration-ui"
+              and j.get("turn_state") == turn_state.AWAITING_JUDGE,
+              f"resp={json.dumps(j, ensure_ascii=False)[:200]}")
+        j = run_engine(slot, {"行为": [],
+                              "当前剧情": "沈孤鸿声在侧，沈孤鸿的佩剑映着微光。",
+                              "场景要素": judge_elements(slot, tmp) + [
+                                  {"主体": "沈孤鸿声", "描写": "立于身侧"},
+                                  {"主体": "沈孤鸿的佩剑", "描写": "映着微光"}]},
+                       cmd="judge", save_dir=tmp, fill_elements=False)
+        check("相似长名不误伤，随身物件（名+的+…）放行",
+              j.get("错误") is None, f"错误={j.get('错误')}")
+        # 5d 收轮后为样例6 新开一轮
+        run_engine(slot, {"行为": []}, save_dir=tmp)
+
         # -------- 样例6：场景登记校验 --------
         print("== 样例6 场景登记校验 ==")
-        j = run_engine(slot, {"行为": [{
-            "类型": "登记场景", "区域": "回归测试区", "场景": "回环庭",
+        prepared = run_engine(slot, {"场景": [{
+            "操作": "登记", "区域": "苏州", "场景": "回环庭",
             "方位出口": {"北": "回环庭"},
-        }], "当前剧情": "测试场景登记。"}, cmd="judge", save_dir=tmp)
-        check("judge 拒绝场景出口指向自身",
-              j.get("错误") is not None and "出口不能指向自身" in str(j.get("错误", "")),
-              f"错误={j.get('错误')}")
+        }]}, cmd="scene-prepare", save_dir=tmp)
+        check("scene-prepare 拒绝场景出口指向自身",
+              prepared.get("错误") is not None and "出口不能指向自身" in str(prepared.get("错误", "")),
+              f"错误={prepared.get('错误')}")
         overlay = sm.read_map_overlay(slot, tmp)
-        check("自环登记失败后不落盘", "回环庭" not in (overlay.get("回归测试区") or {}),
-              f"overlay={overlay.get('回归测试区')}")
-        j = run_engine(slot, {"行为": [{
-            "类型": "登记场景", "区域": "回归测试区", "场景": "甲地",
-            "方位出口": {"北": "乙地"},
-        }], "当前剧情": "测试正常场景登记。"}, cmd="judge", save_dir=tmp)
-        check("judge 接受正常场景连接", j.get("错误") is None,
+        check("自环规划失败后不落盘",
+              "回环庭" not in ((overlay.get("苏州") or {}).get("场景") or []),
+              f"overlay={overlay.get('苏州')}")
+        # 存在性校验：未知区域（真实少林寺山门位于嵩山）、未登记出口目标、跨区域名平移均打回
+        prepared = run_engine(slot, {"场景": [{
+            "操作": "登记", "区域": "少林寺", "场景": "知客寮",
+            "方位出口": {"南": "少林寺山门"},
+        }]}, cmd="scene-prepare", save_dir=tmp)
+        check("scene-prepare 拒绝未知区域",
+              prepared.get("错误") is not None and "未知区域" in str(prepared.get("错误", "")),
+              f"错误={prepared.get('错误')}")
+        prepared = run_engine(slot, {"场景": [{
+            "操作": "登记", "区域": "苏州", "场景": "断头路",
+            "方位出口": {"北": "凭空地点"},
+        }]}, cmd="scene-prepare", save_dir=tmp)
+        check("scene-prepare 拒绝出口目标未登记",
+              prepared.get("错误") is not None and "未登记" in str(prepared.get("错误", "")),
+              f"错误={prepared.get('错误')}")
+        prepared = run_engine(slot, {"场景": [{
+            "操作": "登记", "区域": "苏州", "场景": "断头路",
+            "方位出口": {"北": "涌金门"},
+        }]}, cmd="scene-prepare", save_dir=tmp)
+        check("scene-prepare 拒绝跨区域目标平移",
+              prepared.get("错误") is not None and "未登记" in str(prepared.get("错误", "")),
+              f"错误={prepared.get('错误')}")
+        prepared = run_engine(slot, {"场景": [
+            {"操作": "登记", "区域": "苏州", "场景": "乙地"},
+            {"操作": "登记", "区域": "苏州", "场景": "甲地",
+             "方位出口": {"北": "乙地"}},
+        ]}, cmd="scene-prepare", save_dir=tmp)
+        check("scene-prepare 接受正常场景连接", prepared.get("ok") is True,
+              f"错误={prepared.get('错误')}")
+        j = run_engine(slot, {"行为": [{"类型": "场景-采用草稿"}],
+                              "当前剧情": "测试正常场景登记。"}, cmd="judge", save_dir=tmp)
+        check("judge 原子采纳正常场景连接", j.get("错误") is None,
               f"错误={j.get('错误')}")
-        overlay = sm.read_map_overlay(slot, tmp).get("回归测试区") or {}
-        check("正常连接自动补反向出口",
-              overlay.get("甲地", {}).get("北") == "乙地"
-              and overlay.get("乙地", {}).get("南") == "甲地",
+        overlay = sm.read_map_overlay(slot, tmp).get("苏州") or {}
+        check("正常连接组边双方位内联",
+              any(set(e) == {"甲地.北", "乙地.南"} for e in overlay.get("边") or [])
+              and "甲地" in (overlay.get("场景") or [])
+              and "乙地" in (overlay.get("场景") or []),
               f"overlay={overlay}")
 
         print("== 样例6b 读档重置阶段 ==")
@@ -529,6 +709,12 @@ def main():
         check("读档前可建立待裁定任务草稿", restore_prepared.get("ok") is True
               and os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)),
               f"prepared={json.dumps(restore_prepared, ensure_ascii=False)[:250]}")
+        scene_prepared = run_engine(slot, {"场景": [{
+            "操作": "登记", "区域": "苏州", "场景": "待读档清理孤点",
+        }]}, cmd="scene-prepare", save_dir=tmp)
+        check("读档前可建立待裁定场景草稿", scene_prepared.get("ok") is True
+              and os.path.exists(scene_drafts.scene_drafts_path(slot, tmp)),
+              f"prepared={json.dumps(scene_prepared, ensure_ascii=False)[:250]}")
         saves = sm.list_saves(slot, tmp)
         target = saves[-1][0] if saves else None
         loaded = run_engine(slot, {"行为": [{"类型": "加载存档", "目标": target}]}, save_dir=tmp)
@@ -538,6 +724,8 @@ def main():
               f"loaded={json.dumps(loaded, ensure_ascii=False)[:200]}")
         check("读档后清理任务草稿",
               not os.path.exists(quest_drafts.quest_drafts_path(slot, tmp)))
+        check("读档后清理场景草稿",
+              not os.path.exists(scene_drafts.scene_drafts_path(slot, tmp)))
         restored_presets = sm.read_quest_state(slot, tmp)
         restored_names = set((restored_presets.get("definitions") or {}).keys())
         check("读档保留全部预设任务状态",

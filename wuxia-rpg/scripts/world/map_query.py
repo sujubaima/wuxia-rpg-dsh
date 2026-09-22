@@ -90,17 +90,16 @@ def query_map(region_name, slot=None):
 def _print_region(region, slot):
     scenes = sc.load_scenes()
     merged = sc.merged_scenes(slot, region) if slot is not None else \
-        ((scenes.get("场景", {}) or {}).get(region, {}) or {})
+        sc.merged_scenes(None, region, scenes)
     limit = sc.scene_limit(region, scenes)
     base = set(sc._base_scenes(region, scenes))
-    overlay = sc.read_overlay(slot).get(region, {}) if slot is not None else {}
     station = (scenes.get("驿站出口", {}) or {}).get(region)
 
     print(f"【{region}】 驿站出口: {station or '（未设）'}")
     total = len(merged)
     print(f"配额: 上限 {limit}，已用 {total}，剩余 {limit - total}")
     if not merged:
-        print("（该区域尚无已登记场景，可用「登记场景」逐步起底）")
+        print("（该区域尚无已登记场景，可用 scene-prepare 登记逐步起底）")
         return
     orphans = []
     region_types = sc.merged_types(slot, region, scenes) if slot is not None else \

@@ -13,7 +13,7 @@ from store import save_manager as sm
 VERSION = 3
 _RUNTIME_SUBDIR = ".runtime"
 _FILENAME = "quest_drafts.json"
-_KINDS = {"create", "extend", "modify"}
+_KINDS = {"create", "extend", "modify", "close"}
 
 
 def quest_drafts_path(slot, save_dir=sm.DEFAULT_SAVE_DIR):
@@ -60,7 +60,7 @@ def _validate_record(path, key, raw):
         raise JsonSchemaError(path, f"草稿【{key}】payload 须为对象")
     if not isinstance(raw.get("hidden"), bool):
         raise JsonSchemaError(path, f"草稿【{key}】hidden 须为布尔值")
-    if raw["kind"] in ("extend", "modify") and raw["hidden"]:
+    if raw["kind"] in ("extend", "modify", "close") and raw["hidden"]:
         raise JsonSchemaError(path, f"草稿【{key}】hidden 必须为 false")
     content_hash = raw.get("content_hash")
     if (not isinstance(content_hash, str) or len(content_hash) != 64
