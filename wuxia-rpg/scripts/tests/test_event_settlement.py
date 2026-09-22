@@ -11,7 +11,7 @@ SCRIPTS = os.path.dirname(HERE)
 sys.path.insert(0, SCRIPTS)
 
 from quest.events import (EventCodecV1, EventFactory, EventRequest,
-                                  NARRATIVE_EVENT, STAMINA_CHANGED, TIME_ADVANCED)
+                                  STAMINA_CHANGED, TIME_ADVANCED)
 from settle.engine_actions import _ACTION_HANDLERS, build_mutation_executor
 from settle.engine_io import (_read_merchant_cache, _stage_new_char,
                               _write_merchant_cache)
@@ -88,18 +88,16 @@ class MutationProjectionTest(unittest.TestCase):
             self.assertTrue(all(r["ok"] for r in results))
             self.assertEqual(session.events, [])
 
-    def test_narrative_event_is_event_only(self):
+    def test_narrative_event_mutation_is_rejected(self):
         explore = {"体力": 50}
         executor = build_mutation_executor()
         with SettlementSession(1, explore, executor, "judge") as session:
             results = session.apply_mutations([
                 {"类型": "剧情事件", "事件": "发现密道", "数据": {"地点": "后院"}},
             ])
-            self.assertTrue(all(r["ok"] for r in results))
+            self.assertFalse(all(r["ok"] for r in results))
             self.assertEqual(explore, {"体力": 50})
-            event = next(e for e in session.events if e.type == NARRATIVE_EVENT)
-            self.assertEqual(event.get("name"), "发现密道")
-            self.assertEqual(event.get("data")["地点"], "后院")
+            self.assertEqual(session.events, [])
 
 
 class TriggerSettlementTest(unittest.TestCase):
@@ -206,6 +204,82 @@ class StagingTest(unittest.TestCase):
                 _stage_new_char(1, "新客", {"名称": "新客"})
             write_cache.assert_not_called()
             write_character.assert_not_called()
+
+
+class SceneRegistrationTest(unittest.TestCase):
+    """抵达登记校验 + 场景草稿采用后 SCENE_REGISTERED 事件与机械事实。"""
+
+    @staticmethod
+    def _draft(operations):
+        """构造当前轮场景草稿（round=0），供 场景-采用草稿 mutation 读取。"""
+        return {"round": 0, "operations": operations}
+
+    def test_arrive_rejects_unregistered_destination(self):
+        explore = {"当前位置": "苏州·平江路"}
+        executor = build_mutation_executor()
+        with SettlementSession(1, dict(explore), executor, "go") as session:
+            results = session.apply_mutations([{"类型": "抵达", "位置": "苏州·幻影楼"}])
+            self.assertFalse(results[0]["ok"])
+            self.assertIn("未登记", results[0]["msg"])
+            self.assertEqual(session.explore["当前位置"], "苏州·平江路")
+
+    def test_arrive_accepts_baseline_scene(self):
+        explore = {"当前位置": "苏州·平江路"}
+        executor = build_mutation_executor()
+        with SettlementSession(1, dict(explore), executor, "go") as session:
+            results = session.apply_mutations([{"类型": "抵达", "位置": "苏州·观前街"}])
+            self.assertTrue(results[0]["ok"], results[0].get("msg"))
+            self.assertEqual(session.explore["当前位置"], "苏州·观前街")
+
+    def test_arrive_accepts_scene_registered_in_same_turn(self):
+        explore = {"当前位置": "苏州·平江路"}
+        executor = build_mutation_executor()
+        draft = self._draft([{"类型": "登记场景", "区域": "苏州", "场景": "烟雨渡"}])
+        with patch("settle.engine_actions.sd.select_draft", return_value=draft), \
+             patch("settle.engine_actions.sm.read_round", return_value=0), \
+             SettlementSession(1, dict(explore), executor, "go") as session:
+            results = session.apply_mutations([
+                {"类型": "场景-采用草稿"},
+                {"类型": "抵达", "位置": "苏州·烟雨渡"},
+            ])
+            self.assertTrue(all(r["ok"] for r in results), results)
+            self.assertEqual(session.explore["当前位置"], "苏州·烟雨渡")
+
+    def test_arrive_npc_bypasses_registration_check(self):
+        explore = {"当前位置": "苏州·平江路"}
+        executor = build_mutation_executor()
+        with SettlementSession(1, dict(explore), executor, "go") as session:
+            results = session.apply_mutations(
+                [{"类型": "抵达", "角色": "路人甲", "位置": "苏州·幻影楼"}])
+            self.assertTrue(results[0]["ok"], results[0].get("msg"))
+            self.assertEqual(session.explore["人物位置"]["路人甲"], "苏州·幻影楼")
+
+    def test_scene_draft_adoption_emits_event_and_mechanical_fact(self):
+        from quest.events import FACT_CHANGED, SCENE_REGISTERED
+        from quest.triggers import build_quest_trigger_registry
+        executor = build_mutation_executor()
+        draft = self._draft([{"类型": "登记场景", "区域": "苏州", "场景": "烟雨渡"}])
+        with patch("settle.engine_actions.sd.select_draft", return_value=draft), \
+             patch("settle.engine_actions.sm.read_round", return_value=0), \
+             SettlementSession(1, {}, executor, "judge",
+                               build_quest_trigger_registry()) as session:
+            results = session.apply_mutations([{"类型": "场景-采用草稿"}])
+            self.assertTrue(all(r["ok"] for r in results), results)
+            scene_events = [e for e in session.events if e.type == SCENE_REGISTERED]
+            self.assertEqual(len(scene_events), 1)
+            self.assertEqual(scene_events[0].get("区域"), "苏州")
+            self.assertEqual(scene_events[0].get("场景"), "烟雨渡")
+            # 机械触发器写入存在事实并广播 FACT_CHANGED（任务归约入口）
+            record = session.world_facts["records"]["scene:苏州·烟雨渡.exists@world"]
+            self.assertEqual(record["value"], True)
+            self.assertEqual(record["status"], "verified")
+            fact_keys = [e.get("fact_key") for e in session.events if e.type == FACT_CHANGED]
+            self.assertIn("scene:苏州·烟雨渡.exists@world", fact_keys)
+            # 再次采用（草稿操作重复登记，状态一致）不再发事件
+            results = session.apply_mutations([{"类型": "场景-采用草稿"}])
+            self.assertTrue(all(r["ok"] for r in results), results)
+            self.assertEqual(
+                len([e for e in session.events if e.type == SCENE_REGISTERED]), 1)
 
 
 if __name__ == "__main__":

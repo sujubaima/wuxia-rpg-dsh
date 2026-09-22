@@ -19,8 +19,30 @@ if str(SCRIPTS) not in sys.path:
 from common import dao as dq  # noqa: E402
 from store import save_manager as sm  # noqa: E402
 from store import turn_state  # noqa: E402
+from world import scene as sc  # noqa: E402
 
 ENGINE = SCRIPTS / "engine.py"
+
+_BATTLE_JUDGE_ACTIONS = {"战斗-开始", "战斗-触发", "战斗-推进"}
+
+
+def judge_elements(save_dir, slot, changes=None):
+    """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」目的地；
+    功能场景须含绑定功能NPC与全套特殊指令。"""
+    position = None
+    for action in changes or []:
+        if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
+            position = action.get("位置") or action.get("目的地")
+    if not position:
+        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+    region, _, scene = position.partition("·")
+    stype = sc.scene_type(slot, region, scene)
+    npc = sc.scene_npc(slot, region, scene)
+    commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
+    if npc and commands:
+        return [{"主体": npc, "描写": "当值",
+                 "特殊指令": [{"名称": c, "可用": True} for c in commands]}]
+    return [{"主体": "四周", "描写": "一切如常"}]
 
 
 def character(name):
@@ -28,25 +50,29 @@ def character(name):
         "名称": name,
         "阵营": "江湖",
         "性别": "男",
-        "年岁": 20,
+        "年龄": 20,
         "武功定位": "武者",
-        "品性": {
-            "仁善": 50, "义气": 50, "胆魄": 50, "野心": 0, "底线": 50,
-            "智计": 50, "重利": 0, "守序": 50, "纵欲": 0, "信仰": 0,
-        },
         "一级属性": {"根骨": 10, "力道": 10, "身法": 10, "内功": 10},
-        "极性": {"根骨": 50, "力道": 50, "身法": 50, "内功": 50},
+        "极性": {"内功": "中", "力道": "中", "身法": "中", "根骨": "中"},
         "铜钱": 1000,
         "物品": ["玉佩"],
-        "武学": [],
+        "武学": [{"名称": "百缠手", "等级": 1}],
         "武艺": {"搏击": 10, "剑法": 0, "刀法": 0, "长兵": 0, "奇门": 0, "暗器": 0},
-        "技艺": {},
+        "技艺": {"音律": 0, "弈棋": 0, "诗书": 0, "绘画": 0, "医术": 0, "博物": 0},
         "装备": {},
+        "人设": "测试角色",
     }
 
 
 def run_engine(save_dir, slot, actions, command="go", **extra):
     payload = {"槽位": slot, "行为": actions, **extra}
+    if command == "judge":
+        payload.setdefault("提及地点", [])
+        # 场景要素为非战斗 judge 必填：骨架按落定位置自动补全（显式传入时不覆盖）
+        battle = any(isinstance(a, dict) and a.get("类型") in _BATTLE_JUDGE_ACTIONS
+                     for a in actions or [])
+        if "场景要素" not in payload and not battle:
+            payload["场景要素"] = judge_elements(save_dir, slot, actions)
     env = {**os.environ, "WUXIA_RPG_SAVE_DIR": save_dir}
     proc = subprocess.run(
         [sys.executable, str(ENGINE), command],
@@ -131,7 +157,7 @@ class SlotAllocationTest(unittest.TestCase):
         )
         self.assertEqual(invalid.get("错误码"), "create_slot_required")
         self.assertEqual(invalid.get("next_slot"), 6)
-        invalid_message = invalid.get("错误") or invalid.get("提示") or ""
+        invalid_message = invalid.get("错误") or invalid.get("渲染文本") or ""
         self.assertIn("6", str(invalid_message))
         self.assertFalse(Path(self.save_dir, "slot_0").exists())
 
@@ -143,7 +169,7 @@ class SlotAllocationTest(unittest.TestCase):
         self.assertEqual(conflict.get("错误码"), "slot_occupied")
         self.assertEqual(conflict.get("next_slot"), 6)
         self.assertNotEqual(conflict.get("状态冲突"), "go_already_committed")
-        conflict_message = conflict.get("错误") or conflict.get("提示") or ""
+        conflict_message = conflict.get("错误") or conflict.get("渲染文本") or ""
         self.assertIn("6", str(conflict_message))
         self.assertEqual(directory_snapshot(slot_root), before)
 
@@ -169,7 +195,7 @@ class SlotAllocationTest(unittest.TestCase):
                 {"类型": "开始游戏"},
             ],
         )
-        mixed_message = mixed.get("错误") or mixed.get("提示") or ""
+        mixed_message = mixed.get("错误") or mixed.get("渲染文本") or ""
         self.assertIn("唯一 action", str(mixed_message))
         self.assertFalse(Path(self.save_dir, f"slot_{retry_slot}").exists())
 
@@ -351,7 +377,7 @@ class SlotAllocationTest(unittest.TestCase):
             )
             self.assertIsNone(created.get("错误"), created)
             turn_state.write_state(
-                slot, pending, origin="测试", go_result={}, save_dir=self.save_dir,
+                slot, pending, origin="测试", save_dir=self.save_dir,
             )
             deleted = run_engine(self.save_dir, slot, [{"类型": "删除存档"}])
             self.assertTrue((deleted.get("结算") or [{}])[0].get("ok"), deleted)

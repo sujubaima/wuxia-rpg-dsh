@@ -1138,7 +1138,11 @@ def restore(slot, target, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
     write_round(slot, saved_round, save_dir)
     # 商人货架、场景图与场景类型均使用写入前已校验的快照值。
     write_merchant_cache(slot, saved_merchant, save_dir)
-    write_map_overlay(slot, saved_map, save_dir)
+    # 旧格式（每场景{方位:邻}dict）覆盖层快照读入即迁移为边表（scene.py 为权威读写者）
+    from world import scene as _sc  # 惰性导入，避免 save_manager ↔ scene 循环依赖
+    from world import scene_format as _sfmt
+    write_map_overlay(slot, _sfmt.normalize_overlay(saved_map, baseline=_sc.load_scenes()),
+                      save_dir)
     write_scene_types_overlay(slot, saved_scene_types, save_dir)
     write_world_facts(slot, saved_world_facts, save_dir)
     write_quest_state(slot, saved_quest_state, save_dir)

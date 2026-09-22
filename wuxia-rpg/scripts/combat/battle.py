@@ -1468,7 +1468,7 @@ def emit_battle_json(state, report, player_ui=None, winner=None,
                      回合详情=None, 行动预告=None, 行动信息=None):
     """统一输出战斗 JSON：{战局状态, 战报, 玩家界面/行动信息}。
     - 战局状态：状态(我方视角)/回合数/我方/敌方/战果(战斗结束时：{角色名:存活|逃走|败阵})
-    - 战报/玩家界面：LLM 与 WEB_UI 均带，供 engine 生成规范 Markdown
+    - 战报/玩家界面：所有模式均带，供 engine 生成规范 Markdown
     - 回合详情/行动信息：WEB_UI 与 dsh 带，供前端结构化渲染
     战斗结束（winner 非空或 end_mode 非空）时附 `战果`：双方人员名称→最终状态。
     """
@@ -1489,14 +1489,12 @@ def emit_battle_json(state, report, player_ui=None, winner=None,
         "我方": _roster_with_status(state, my_team, ended=ended),
         "敌方": _roster_with_status(state, enemy_team, ended=ended),
     }
-    # LLM 只需文本；WEB_UI 同时保留文本与结构；dsh 只需结构化字段。
+    # LLM 只需文本；WEB_UI/dsh 同时保留文本与结构（卡片消费结构化，渲染文本用文本）。
     # 战局状态/战果为战况状态、行动预告为行动顺序，所有模式均带。
     mode = render_mode().lower()
-    payload = {"战局状态": battle_state}
-    if mode != "dsh":
-        payload["战报"] = report or ""
-        if player_ui is not None:
-            payload["玩家界面"] = player_ui
+    payload = {"战局状态": battle_state, "战报": report or ""}
+    if player_ui is not None:
+        payload["玩家界面"] = player_ui
     if mode != "llm":
         if 回合详情 is not None:
             payload["回合详情"] = 回合详情

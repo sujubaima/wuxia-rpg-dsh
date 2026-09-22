@@ -74,16 +74,24 @@ class EngineServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(health["service"], "wuxia-rpg-engine")
         self.assertEqual(health["instance_id"], "python-service-test")
-        self.assertEqual(health["protocol_version"], "1.2")
+        self.assertEqual(health["protocol_version"], "1.6")
         status, manifest = self.request("GET", "/api/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(manifest["tools"]), 9)
+        self.assertEqual(len(manifest["tools"]), 10)
 
     def test_canonical_and_compatibility_routes_share_gateway(self):
         payload = {"槽位": 0, "类型": "状态", "名称": ["不存在"]}
         status, canonical = self.request("POST", "/api/v1/operations/query", payload)
         self.assertEqual(status, 200)
         status, compatible = self.request("POST", "/api/query", payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(compatible, canonical)
+
+        scene_payload = {"槽位": 1, "场景": []}
+        status, canonical = self.request(
+            "POST", "/api/v1/operations/scene-prepare", scene_payload)
+        self.assertEqual(status, 200)
+        status, compatible = self.request("POST", "/api/scene-prepare", scene_payload)
         self.assertEqual(status, 200)
         self.assertEqual(compatible, canonical)
 

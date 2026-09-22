@@ -36,21 +36,30 @@ class TurnStateStoreTest(unittest.TestCase):
             2,
             turn_state.AWAITING_JUDGE,
             origin="普通行动",
-            go_result={"结算": [{"ok": True}]},
             save_dir=self.save_dir,
         )
         self.assertEqual(turn_state.read_state(2, self.save_dir), expected)
 
         reset = turn_state.reset_state(2, self.save_dir)
         self.assertEqual(reset["state"], turn_state.READY)
-        self.assertEqual(reset["go_result"], {})
         self.assertEqual(turn_state.read_state(2, self.save_dir), reset)
+
+    def test_legacy_go_result_key_is_ignored(self):
+        path = turn_state.turn_state_path(2, self.save_dir)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump({"version": 1, "state": turn_state.AWAITING_JUDGE,
+                       "origin": "普通行动", "go_result": {"结算": []}}, file)
+        self.assertEqual(turn_state.read_state(2, self.save_dir), {
+            "version": 1,
+            "state": turn_state.AWAITING_JUDGE,
+            "origin": "普通行动",
+        })
 
     def test_slot_zero_never_writes_state(self):
         state = turn_state.write_state(
             0,
             turn_state.AWAITING_JUDGE,
-            go_result={"ok": True},
             save_dir=self.save_dir,
         )
         self.assertEqual(state["state"], turn_state.READY)

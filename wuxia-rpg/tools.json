@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.2",
+  "protocol_version": "1.6",
   "tools": [
     {
       "name": "wuxia_go",
@@ -10,24 +10,58 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号；开始游戏传0，创建角色传开始游戏返回的next_slot"},
-          "行为": {"type": "array", "description": "go 行为数组；所有行动均受已确定的剧情约束阻止时传空数组，随后继续 judge", "items": {"type": "object", "additionalProperties": true}}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号；开始游戏传0，创建角色传开始游戏返回的next_slot"
+          },
+          "行为": {
+            "type": "array",
+            "description": "go 行为数组；所有行动均受已确定的剧情约束阻止时传空数组，随后继续 judge",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
         },
-        "required": ["槽位", "行为"]
+        "required": [
+          "槽位",
+          "行为"
+        ]
       },
       "output_schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "界面": {"type": "string"},
-          "渲染模式": {"type": "string", "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"},
-          "渲染文本": {"type": "string", "description": "界面完整 Markdown；GM 严格原样输出、不改写或润色，包括空字符串"},
-          "错误": {"type": "string"},
-          "错误码": {"type": "string", "description": "业务错误稳定标识，如slot_occupied"},
-          "next_slot": {"type": "integer", "description": "开始游戏或创建槽位冲突时返回的最新可用槽位"},
-          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
-          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"},
-          "go_result": {"type": "object", "description": "重复 go 时返回的既有结算", "additionalProperties": true}
+          "界面": {
+            "type": "string"
+          },
+          "渲染模式": {
+            "type": "string",
+            "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"
+          },
+          "渲染文本": {
+            "type": "string",
+            "description": "界面完整 Markdown（仅 LLM 渲染模式返回）；GM 有则原样输出、不改写或润色，包括空字符串；无（dsh/WEB_UI 由前端渲染）则直接输出当前剧情"
+          },
+          "错误": {
+            "type": "string"
+          },
+          "错误码": {
+            "type": "string",
+            "description": "业务错误稳定标识，如slot_occupied"
+          },
+          "next_slot": {
+            "type": "integer",
+            "description": "开始游戏或创建槽位冲突时返回的最新可用槽位"
+          },
+          "状态冲突": {
+            "type": "string",
+            "description": "阶段门禁冲突的稳定标识"
+          },
+          "turn_state": {
+            "type": "string",
+            "description": "当前 go/judge 阶段"
+          }
         }
       }
     },
@@ -40,24 +74,76 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号"},
-          "行为": {"type": "array", "description": "状态变更/战斗 action 数组", "items": {"type": "object", "additionalProperties": true}},
-          "当前剧情": {"type": "string", "description": "本回合剧情（非战斗裁定必填）"},
-          "场景要素": {"type": "array", "description": "场景要素，每项描写不超过30字", "items": {"type": "object", "additionalProperties": true}},
-          "经历概括": {"type": "string", "description": "经历概括"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号"
+          },
+          "行为": {
+            "type": "array",
+            "description": "状态变更/战斗 action 数组",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "当前剧情": {
+            "type": "string",
+            "description": "本回合剧情（非战斗裁定必填）"
+          },
+          "场景要素": {
+            "type": "array",
+            "description": "本轮可见的人/物/环境要素，每项描写不超过30字；非战斗 judge 必填非空（无变化也须重报现状，战斗类 judge 豁免）",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "提及地点": {
+            "type": "array",
+            "description": "本轮叙事新提及、玩家可前往的「区域·场景」全名（如 苏州·玄妙观；可为空数组，不得缺省）。正式地图或本轮已采用场景草稿中不存在时将被打回。",
+            "items": {
+              "type": "string"
+            }
+          },
+          "经历概括": {
+            "type": "string",
+            "description": "经历概括"
+          }
         },
-        "required": ["槽位", "行为"]
+        "required": [
+          "槽位",
+          "行为",
+          "场景要素",
+          "提及地点"
+        ]
       },
       "output_schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "界面": {"type": "string"},
-          "渲染模式": {"type": "string", "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"},
-          "渲染文本": {"type": "string", "description": "界面完整 Markdown；GM 严格原样输出、不改写或润色，包括空字符串"},
-          "错误": {"type": "string"},
-          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
-          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
+          "界面": {
+            "type": "string"
+          },
+          "渲染模式": {
+            "type": "string",
+            "description": "归一渲染模式：dsh/WEB_UI/LLM（未设置为 LLM）"
+          },
+          "渲染文本": {
+            "type": "string",
+            "description": "界面完整 Markdown（仅 LLM 渲染模式返回）；GM 有则原样输出、不改写或润色，包括空字符串；无（dsh/WEB_UI 由前端渲染）则直接输出当前剧情"
+          },
+          "错误": {
+            "type": "string"
+          },
+          "状态冲突": {
+            "type": "string",
+            "description": "阶段门禁冲突的稳定标识"
+          },
+          "turn_state": {
+            "type": "string",
+            "description": "当前 go/judge 阶段"
+          }
         }
       }
     },
@@ -70,23 +156,58 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号"},
-          "属性": {"type": "array", "description": "判定属性名数组（多属性取均值）", "items": {"type": "string"}},
-          "判定角色": {"type": "array", "description": "判定角色名数组（多角色取均值）", "items": {"type": "string"}},
-          "对抗": {"type": "string", "description": "角色名（可逗号多个）或以 @ 开头的数值"},
-          "基础成功率": {"type": "number", "description": "基础成功率 0~100，缺省50"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号"
+          },
+          "属性": {
+            "type": "array",
+            "description": "判定属性名数组（多属性取均值）",
+            "items": {
+              "type": "string"
+            }
+          },
+          "判定角色": {
+            "type": "array",
+            "description": "判定角色名数组（多角色取均值）",
+            "items": {
+              "type": "string"
+            }
+          },
+          "对抗": {
+            "type": "string",
+            "description": "角色名（可逗号多个）或以 @ 开头的数值"
+          },
+          "基础成功率": {
+            "type": "number",
+            "description": "基础成功率 0~100，缺省50"
+          }
         },
-        "required": ["槽位"]
+        "required": [
+          "槽位"
+        ]
       },
       "output_schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "结果": {"type": "string"},
-          "提示": {"type": "string"},
-          "错误": {"type": "string"},
-          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
-          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
+          "结果": {
+            "type": "string"
+          },
+          "提示": {
+            "type": "string"
+          },
+          "错误": {
+            "type": "string"
+          },
+          "状态冲突": {
+            "type": "string",
+            "description": "阶段门禁冲突的稳定标识"
+          },
+          "turn_state": {
+            "type": "string",
+            "description": "当前 go/judge 阶段"
+          }
         }
       }
     },
@@ -99,20 +220,117 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号"},
-          "基础成功率": {"type": "number", "description": "基础触发率 0~100，缺省15"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号"
+          },
+          "基础成功率": {
+            "type": "number",
+            "description": "基础触发率 0~100，缺省15"
+          }
         },
-        "required": ["槽位"]
+        "required": [
+          "槽位"
+        ]
       },
       "output_schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "结果": {"type": "string"},
-          "提示": {"type": "string"},
+          "结果": {
+            "type": "string"
+          },
+          "提示": {
+            "type": "string"
+          },
+          "错误": {
+            "type": "string"
+          },
+          "状态冲突": {
+            "type": "string",
+            "description": "阶段门禁冲突的稳定标识"
+          },
+          "turn_state": {
+            "type": "string",
+            "description": "当前 go/judge 阶段"
+          }
+        }
+      }
+    },
+    {
+      "name": "wuxia_scene_prepare",
+      "operation": "scene-prepare",
+      "title": "武侠 scene prepare",
+      "description": "武侠RPG 批量准备与预校验场景登记、隔离和重连。仅在 go 已完成、等待 judge 时调用；不落正式地图，最终由 judge 的「场景-采用草稿」原子结算。传空场景数组可清除本轮草稿。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号"
+          },
+          "场景": {
+            "type": "array",
+            "description": "本轮最新场景规划批次；空数组表示清除草稿",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "操作": {
+                  "type": "string",
+                  "description": "登记 / 隔离 / 重连",
+                  "enum": ["登记", "隔离", "重连"]
+                },
+                "区域": {
+                  "type": "string",
+                  "description": "须为基线已知区域名（如 苏州/嵩山），未知区域会被打回"
+                },
+                "场景": {
+                  "type": "string"
+                },
+                "方位出口": {
+                  "type": "object",
+                  "description": "方位到相邻场景名；目标须为已登记地点（同批次登记顺序不限），登记可省，重连必传非空对象",
+                  "additionalProperties": true
+                },
+                "功能类型": {
+                  "type": "string",
+                  "description": "登记功能场景时可传：驿站 / 店铺 / 客栈"
+                },
+                "功能NPC": {
+                  "type": "string",
+                  "description": "登记功能场景时绑定的身份名"
+                }
+              },
+              "required": ["操作", "区域", "场景"]
+            }
+          }
+        },
+        "required": ["槽位", "场景"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "ok": {"type": "boolean"},
+          "场景": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "操作": {"type": "string"},
+                "区域": {"type": "string"},
+                "场景": {"type": "string"}
+              }
+            }
+          },
+          "剩余配额": {"type": "integer"},
+          "已清除": {"type": "boolean"},
           "错误": {"type": "string"},
-          "状态冲突": {"type": "string", "description": "阶段门禁冲突的稳定标识"},
-          "turn_state": {"type": "string", "description": "当前 go/judge 阶段"}
+          "状态冲突": {"type": "string"},
+          "turn_state": {"type": "string"}
         }
       }
     },
@@ -125,7 +343,10 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号"
+          },
           "任务": {
             "type": "array",
             "description": "本轮最新任务草稿批次，可混合创建和扩展",
@@ -134,40 +355,84 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "操作": {"type": "string", "enum": ["创建", "扩展"]},
-                "蓝图": {"type": "object", "description": "完整创建蓝图或扩展定义", "additionalProperties": true},
-                "隐藏": {"type": "boolean", "description": "仅创建可用，缺省false"}
+                "操作": {
+                  "type": "string",
+                  "enum": [
+                    "创建",
+                    "扩展"
+                  ]
+                },
+                "蓝图": {
+                  "type": "object",
+                  "description": "完整创建蓝图或扩展定义",
+                  "additionalProperties": true
+                },
+                "隐藏": {
+                  "type": "boolean",
+                  "description": "仅创建可用，缺省false"
+                }
               },
-              "required": ["操作", "蓝图"]
+              "required": [
+                "操作",
+                "蓝图"
+              ]
             }
           }
         },
-        "required": ["槽位", "任务"]
+        "required": [
+          "槽位",
+          "任务"
+        ]
       },
       "output_schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
-          "ok": {"type": "boolean"},
+          "ok": {
+            "type": "boolean"
+          },
           "任务": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": true,
               "properties": {
-                "操作": {"type": "string"},
-                "版本": {"type": "integer"},
-                "名称": {"type": "string"},
-                "节点数": {"type": "integer"},
-                "终局数": {"type": "integer"},
-                "扩展点数": {"type": "integer"},
-                "引用事实": {"type": "array", "items": {"type": "string"}}
+                "操作": {
+                  "type": "string"
+                },
+                "版本": {
+                  "type": "integer"
+                },
+                "名称": {
+                  "type": "string"
+                },
+                "节点数": {
+                  "type": "integer"
+                },
+                "终局数": {
+                  "type": "integer"
+                },
+                "扩展点数": {
+                  "type": "integer"
+                },
+                "引用事实": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               }
             }
           },
-          "错误": {"type": "string"},
-          "状态冲突": {"type": "string"},
-          "turn_state": {"type": "string"}
+          "错误": {
+            "type": "string"
+          },
+          "状态冲突": {
+            "type": "string"
+          },
+          "turn_state": {
+            "type": "string"
+          }
         }
       }
     },
@@ -180,17 +445,50 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
-          "类型": {"type": "string", "description": "角色 / 武学 / 物品 / 状态 / 阵营 / 场景角色"},
-          "名称": {"type": "array", "description": "名称数组；不传则列出该类型全部名称", "items": {"type": "string"}},
-          "派生": {"type": "boolean", "description": "角色查询是否附带战斗同源派生属性"},
-          "字段": {"type": "array", "description": "仅返回指定字段", "items": {"type": "string"}},
-          "等级": {"type": "integer", "description": "武学精进等级，缺省1"},
-          "位置": {"type": "string", "description": "查询场景角色时传入 区域·场景"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号；未建档时传0读取基线"
+          },
+          "类型": {
+            "type": "string",
+            "description": "角色 / 武学 / 物品 / 状态 / 阵营 / 场景角色"
+          },
+          "名称": {
+            "type": "array",
+            "description": "名称数组；不传则列出该类型全部名称",
+            "items": {
+              "type": "string"
+            }
+          },
+          "派生": {
+            "type": "boolean",
+            "description": "角色查询是否附带战斗同源派生属性"
+          },
+          "字段": {
+            "type": "array",
+            "description": "仅返回指定字段",
+            "items": {
+              "type": "string"
+            }
+          },
+          "等级": {
+            "type": "integer",
+            "description": "武学精进等级，缺省1"
+          },
+          "位置": {
+            "type": "string",
+            "description": "查询场景角色时传入 区域·场景"
+          }
         },
-        "required": ["槽位", "类型"]
+        "required": [
+          "槽位",
+          "类型"
+        ]
       },
-      "output_schema": {"type": "object", "additionalProperties": true}
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
     },
     {
       "name": "wuxia_setting",
@@ -201,12 +499,24 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
-          "目标": {"type": "string", "description": "门派名或人物名"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号；未建档时传0读取基线"
+          },
+          "目标": {
+            "type": "string",
+            "description": "门派名或人物名"
+          }
         },
-        "required": ["槽位", "目标"]
+        "required": [
+          "槽位",
+          "目标"
+        ]
       },
-      "output_schema": {"type": "object", "additionalProperties": true}
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
     },
     {
       "name": "wuxia_recommend",
@@ -217,26 +527,58 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
-          "姓名": {"type": "string", "description": "角色姓名，仅作标识"},
-          "阵营": {"type": "string", "description": "门派名或江湖/散人，缺省散人"},
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号；未建档时传0读取基线"
+          },
+          "姓名": {
+            "type": "string",
+            "description": "角色姓名，仅作标识"
+          },
+          "阵营": {
+            "type": "string",
+            "description": "门派名或江湖/散人，缺省散人"
+          },
           "一级属性": {
             "type": "object",
             "description": "内功、力道、身法、根骨四项整数",
             "additionalProperties": false,
             "properties": {
-              "内功": {"type": "integer"},
-              "力道": {"type": "integer"},
-              "身法": {"type": "integer"},
-              "根骨": {"type": "integer"}
+              "内功": {
+                "type": "integer"
+              },
+              "力道": {
+                "type": "integer"
+              },
+              "身法": {
+                "type": "integer"
+              },
+              "根骨": {
+                "type": "integer"
+              }
             },
-            "required": ["内功", "力道", "身法", "根骨"]
+            "required": [
+              "内功",
+              "力道",
+              "身法",
+              "根骨"
+            ]
           },
-          "武学偏好": {"type": "string", "description": "剑法 / 刀法 / 长兵 / 奇门 / 暗器 / 搏击"}
+          "武学偏好": {
+            "type": "string",
+            "description": "剑法 / 刀法 / 长兵 / 奇门 / 暗器 / 搏击"
+          }
         },
-        "required": ["槽位", "一级属性", "武学偏好"]
+        "required": [
+          "槽位",
+          "一级属性",
+          "武学偏好"
+        ]
       },
-      "output_schema": {"type": "object", "additionalProperties": true}
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
     },
     {
       "name": "wuxia_map_query",
@@ -247,12 +589,24 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "槽位": {"type": "integer", "description": "当前存档槽位号；未建档时传0读取基线"},
-          "区域": {"type": "string", "description": "区域名（支持唯一子串）或“配额”"}
+          "槽位": {
+            "type": "integer",
+            "description": "当前存档槽位号；未建档时传0读取基线"
+          },
+          "区域": {
+            "type": "string",
+            "description": "区域名（支持唯一子串）或“配额”"
+          }
         },
-        "required": ["槽位", "区域"]
+        "required": [
+          "槽位",
+          "区域"
+        ]
       },
-      "output_schema": {"type": "object", "additionalProperties": true}
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      }
     }
   ]
 }

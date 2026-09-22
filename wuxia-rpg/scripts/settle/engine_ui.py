@@ -3,7 +3,7 @@
 """engine ui 层(由 engine.py 拆分)。"""
 import os, sys
 from common import dao as dq
-from common.render_mode import is_dsh_mode, render_mode
+from common.render_mode import render_mode
 from world import mastery as ms
 from store import save_manager as sm
 from world import trade as td
@@ -168,14 +168,8 @@ def _build_mastery(slot, role, skill_name):
                 "经验值": char.get("经验值", 0), "等级": 0}
     level = ms.get_learned_level(char, skill_name) or 0
     exp = char.get("经验值", 0) or 0
-    # dsh：只出结构化十境表数据（卡片消费，渲染文本为空）；
-    # LLM：只出十境表文本（供 Markdown 直拼）；其余（WEB_UI 等）：两者并存。
-    if is_dsh_mode():
-        table, _ = ms.build_table_struct(char, skill_name, exp, level)
-        return {
-            "界面": "mastery-ui", "角色": role, "武学": skill_name,
-            "经验值": exp, "等级": level, "十境表数据": table,
-        }
+    # LLM：只出十境表文本（供 Markdown 直拼）；
+    # 其余（WEB_UI/dsh 等）：文本与结构化数据并存（卡片消费结构化，渲染文本用文本）。
     lines, _ = ms.build_table(char, skill_name, exp, level)
     data = {
         "界面": "mastery-ui", "角色": role, "武学": skill_name,
@@ -589,18 +583,18 @@ def merchant_sell(slot, seller, buyer, item, count=1, merchant=False, price=None
 
 def _gm_autosave_hint(slot):
     """自动存档回合返回的 GM参考：提示已自动存档。"""
-    return {"提示": "已自动存档。经历概括 / 线索栏 已随 judge 顶层透出（全量），GM 据此做周期回顾即可。"}
+    return {"提示": "已自动存档。需回顾剧情或线索时用 查看线索 查询（含经历概括与线索栏）。"}
 
 def _region_info(slot, explore):
-    """当前所在地点 + 该区域的已知场景图 + 区域人物。
-    仅 go 隐藏 界面（GM 将下调 judge）的返回携带。"""
+    """当前区域提示 + 区域人物。
+    仅 go 隐藏 界面（GM 将下调 judge）的返回携带；
+    场景全图不再回带，GM 需要时用 wuxia_map_query 查询。"""
     pos = explore.get("当前位置") or ""
     region = pos.split("·")[0] if pos else ""
     if not region:
         return {}
-    return {"当前所在地点": pos,
-            "区域": region,
-            "区域场景": sc.merged_scenes(slot, region),
+    return {"区域提示": f"当前在【{region}】地区；查询场景图或区域人物可用 "
+                      f"wuxia_map_query（不可用时 engine map-query）",
             "区域人物": sc.scene_chars(slot, region, pos.split("·", 1)[1])}
 
 def _inject_narrative(base, results):

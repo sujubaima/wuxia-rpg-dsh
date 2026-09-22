@@ -7,11 +7,13 @@ import os, sys
 import json
 from world import character_ops as co
 from common import dao as dq
+from common.character_schema import validate_character_record
 from common.json_io import JsonReadError
 from world import mastery as ms
 from store import save_manager as sm
 from store import battle_runtime as br
 from store import quest_drafts as qd
+from store import scene_drafts as sd
 from combat import battle as bt
 from common import status_manager as sm_status
 from world import scene as sc
@@ -28,13 +30,13 @@ from store.battle_last import read_battle_last as _read_battle_last, write_battl
 from quest.events import (BATTLE_ENDED, CHARACTER_CREATED, COPPER_CHANGED,
                                   DEATH_CHANGED, EQUIPMENT_CHANGED, FACT_CHANGED,
                                   HP_CHANGED, ITEM_CHANGED, LOADOUT_CHANGED,
-                                  LOCATION_CHANGED, MP_CHANGED, NARRATIVE_EVENT,
+                                  LOCATION_CHANGED, MP_CHANGED,
                                   NPC_CONTACTED, PARTY_CHANGED, QUEST_CREATED,
                                   QUEST_DISCOVERED, QUEST_EXTENDED,
-                                  RELATION_CHANGED, SKILL_CHANGED,
-                                  STAMINA_CHANGED, TIME_ADVANCED)
-from quest.engine import (create_quest, discover_quest, extend_quest,
-                          modify_quest_rewards)
+                                  RELATION_CHANGED, SCENE_REGISTERED,
+                                  SKILL_CHANGED, STAMINA_CHANGED, TIME_ADVANCED)
+from quest.engine import (close_extension_node, create_quest, discover_quest,
+                          extend_quest, modify_quest_rewards)
 from quest.world_facts import upsert_fact
 from settle.engine_fields import (_FIELD_HANDLERS, _apply_mastery, _carry_item_op,
                                   _carry_skill_op, _chg_carry_item, _chg_carry_skill,
@@ -87,7 +89,8 @@ def _advance_time(slot, explore, delta):
 
 def _apply_arrive(slot, explore, c):
     """抵达：玩家移动 → 设 explore.当前位置；NPC 移动 → 设角色.人物位置。
-    传 角色 则改 NPC 位置，否则改当前玩家位置。"""
+    传 角色 则改 NPC 位置（可在图外，不校验登记），否则改当前玩家位置。
+    玩家目的地须为已登记的「区域·场景」（基线∪覆盖层∪本轮暂存），未登记报错。"""
     dest = c.get("位置") or c.get("目的地")
     if not dest:
         return {"ok": False, "msg": "抵达缺 位置/目的地"}
@@ -99,6 +102,14 @@ def _apply_arrive(slot, explore, c):
         pos[name] = dest
         explore["人物位置"] = pos
         return {"ok": True, "msg": f"{name} 抵达 {dest}"}
+    region, _, scene = str(dest).partition("·")
+    known = sc.merged_scenes(slot, region) if scene else {}
+    staged_region = (est._SCENE_STAGED or {}).get(region) or {} if scene else {}
+    staged_names = staged_region.get("场景") or []
+    if not scene or (scene not in known and scene not in staged_names):
+        return {"ok": False,
+                "msg": f"抵达目的地【{dest}】未登记：须为已登记的「区域·场景」，"
+                       f"请先用 scene-prepare 准备登记并在 judge 采用草稿，或改写目的地"}
     explore["当前位置"] = dest
     return {"ok": True, "msg": f"抵达 {dest}", "变更": f"抵达 {dest}"}
 
@@ -930,8 +941,6 @@ def _project_mutation_events(context, mutation, before, after, results):
 
     if mutation.get("类型") == "战斗-结束":
         changed(BATTLE_ENDED, {"stamina_cost": _BATTLE_STAMINA, "time_cost": _BATTLE_TIME})
-    if mutation.get("类型") == "剧情事件":
-        changed(NARRATIVE_EVENT, {"name": mutation.get("事件"), "data": mutation.get("数据") or {}})
     return events
 
 
@@ -984,6 +993,11 @@ def _apply_write_character_mutation(context, mutation):
     )
     if not has_wuxue:
         return {"ok": False, "msg": f"写角色失败：角色【{name}】的武学不能为空"}
+    error = validate_character_record(
+        rec, skill_lookup=lambda n: dq.get("武学", n),
+        item_lookup=lambda n: dq.get("物品", n))
+    if error:
+        return {"ok": False, "msg": f"写角色失败：{error}"}
     try:
         _stage_new_char(context.slot, name, rec)
     except ValueError as exc:
@@ -997,16 +1011,6 @@ def _apply_write_character_mutation(context, mutation):
         pos[name] = region
         context.explore["人物位置"] = pos
     return {"ok": True, "msg": f"落盘角色【{name}】", "变更": f"落盘角色 {name}"}
-
-
-def _apply_narrative_event_mutation(context, mutation):
-    name = mutation.get("事件")
-    data = mutation.get("数据", {})
-    if not isinstance(name, str) or not name.strip():
-        return {"ok": False, "msg": "剧情事件须传入非空 事件 名称"}
-    if not isinstance(data, dict):
-        return {"ok": False, "msg": "剧情事件 数据 须为对象"}
-    return {"ok": True, "msg": f"剧情事件【{name.strip()}】已记录", "变更": f"剧情事件 {name.strip()}"}
 
 
 def _apply_gift_mutation(context, mutation):
@@ -1102,6 +1106,7 @@ def _apply_quest_create_mutation(context, mutation):
     hidden = bool(mutation.get("隐藏") or mutation.get("hidden"))
     definition = create_quest(
         context.session.world_facts, context.session.quest_state, raw, hidden=hidden,
+        incremental=True,
     )
     runtime = context.session.quest_state["runtimes"][definition["name"]]
     if not hidden:
@@ -1142,7 +1147,8 @@ def _apply_quest_discover_mutation(context, mutation):
 def _apply_quest_extend_mutation(context, mutation):
     if context.session is None:
         return {"ok": False, "msg": "线索扩展必须处于 SettlementSession"}
-    definition = extend_quest(context.session.world_facts, context.session.quest_state, mutation)
+    definition = extend_quest(context.session.world_facts, context.session.quest_state,
+                              mutation, incremental=True)
     context.session.mark_world_facts_dirty()
     context.session.mark_quest_state_dirty()
     return {
@@ -1186,6 +1192,7 @@ def _apply_quest_draft_mutation(context, mutation):
                     context.session.quest_state,
                     copy.deepcopy(record["payload"]),
                     hidden=hidden,
+                    incremental=True,
                 )
                 runtime = context.session.quest_state["runtimes"][definition["name"]]
                 if not hidden:
@@ -1197,6 +1204,7 @@ def _apply_quest_draft_mutation(context, mutation):
                     context.session.world_facts,
                     context.session.quest_state,
                     copy.deepcopy(record["payload"]),
+                    incremental=True,
                 )
                 event_type = QUEST_EXTENDED
             elif kind == "modify":
@@ -1207,6 +1215,18 @@ def _apply_quest_draft_mutation(context, mutation):
                     copy.deepcopy(record["payload"]),
                 )
                 event_type = QUEST_EXTENDED
+            elif kind == "close":
+                hidden = False
+                payload = record["payload"]
+                notice = close_extension_node(
+                    context.session.quest_state,
+                    quest_name,
+                    payload.get("节点"),
+                    payload.get("描述"),
+                )
+                if notice:
+                    context.session.add_notices((notice,))
+                event_type = QUEST_EXTENDED
             else:
                 raise ValueError(f"任务草稿【{quest_name}】类型无效")
         except ValueError as exc:
@@ -1214,22 +1234,65 @@ def _apply_quest_draft_mutation(context, mutation):
                 f"任务草稿【{quest_name}】已过期，须重新 prepare（{exc}）"
             ) from exc
 
-        actual_hash = qd.definition_hash(kind, definition, hidden)
-        if actual_hash != record["content_hash"]:
-            raise ValueError(f"任务草稿【{quest_name}】已过期，须重新 prepare")
+        if kind != "close":
+            actual_hash = qd.definition_hash(kind, definition, hidden)
+            if actual_hash != record["content_hash"]:
+                raise ValueError(f"任务草稿【{quest_name}】已过期，须重新 prepare")
 
+        if kind == "close":
+            closed_node = (record["payload"].get("节点") or "").strip()
+            msg = f"线索【{quest_name}】扩展点【{closed_node}】已关闭"
+        else:
+            msg = (f"线索【{definition['name']}】已创建" if kind == "create"
+                   else f"线索【{definition['name']}】奖励已修改" if kind == "modify"
+                   else f"线索【{definition['name']}】蓝图已扩展")
         results.append({
             "ok": True,
-            "msg": (f"线索【{definition['name']}】已创建" if kind == "create"
-                    else f"线索【{definition['name']}】奖励已修改" if kind == "modify"
-                    else f"线索【{definition['name']}】蓝图已扩展"),
-            "_quest_name": definition["name"],
+            "msg": msg,
+            "_quest_name": quest_name,
             "_quest_event_type": event_type,
             "_静默": True,
         })
 
     context.session.mark_world_facts_dirty()
     context.session.mark_quest_state_dirty()
+    return results
+
+
+def _apply_scene_draft_mutation(context, mutation):
+    if context.session is None:
+        return {"ok": False, "msg": "场景草稿采用必须处于 SettlementSession"}
+    extra = set(mutation) - {"类型"}
+    if extra:
+        raise ValueError(f"场景-采用草稿出现非预期字段：{'、'.join(sorted(extra))}")
+    try:
+        batch = sd.select_draft(context.slot)
+    except JsonReadError as exc:
+        raise ValueError(f"场景草稿读取失败，须重新 prepare（{exc.detail}）") from exc
+    current_round = sm.read_round(context.slot)
+    if batch["round"] != current_round:
+        raise ValueError(
+            f"场景草稿属于 round {batch['round']}，当前为 {current_round}，须重新 prepare"
+        )
+
+    # 同批次登记的场景名（按区域）：出口目标可前向引用批次内任意登记项，与 prepare 口径一致
+    batch_targets = {}
+    for operation in batch["operations"]:
+        if operation.get("类型") == "登记场景":
+            batch_targets.setdefault(operation.get("区域"), set()).add(operation.get("场景"))
+    results = []
+    for operation in batch["operations"]:
+        if operation.get("类型") == "登记场景":
+            result = sc.register_scene(
+                context.slot, operation, est._SCENE_STAGED, est._SCENE_TYPE_STAGED,
+                known_targets=batch_targets.get(operation.get("区域")),
+            )
+            if result.get("ok") and result.get("变更"):
+                result["_scene_region"] = operation.get("区域")
+                result["_scene_name"] = operation.get("场景")
+        else:
+            result = sc.isolate_scene(context.slot, operation, est._SCENE_STAGED)
+        results.append(result)
     return results
 
 
@@ -1253,6 +1316,17 @@ def _project_quest_event(event_type):
     return project
 
 
+def _project_scene_draft_events(context, mutation, before, after, results):
+    return [
+        context.event_factory.create(
+            SCENE_REGISTERED,
+            {"区域": result["_scene_region"], "场景": result["_scene_name"]},
+        )
+        for result in results
+        if result.get("_scene_region") and result.get("_scene_name")
+    ]
+
+
 def build_mutation_executor():
     executor = MutationExecutor()
     projector = _project_mutation_events
@@ -1263,9 +1337,8 @@ def build_mutation_executor():
     executor.register("时间", _apply_time_mutation, _mutation_snapshot, projector)
     executor.register("战斗-结束", _apply_battle_end_mutation, _mutation_snapshot, projector)
     executor.register("抵达", lambda ctx, c: _apply_arrive(ctx.slot, ctx.explore, c), _mutation_snapshot, projector)
-    executor.register("登记场景", lambda ctx, c: sc.register_scene(ctx.slot, c, est._SCENE_STAGED,
-                                                                  est._SCENE_TYPE_STAGED))
-    executor.register("隔离地点", lambda ctx, c: sc.isolate_scene(ctx.slot, c, est._SCENE_STAGED))
+    executor.register("场景-采用草稿", _apply_scene_draft_mutation,
+                      project=_project_scene_draft_events)
     executor.register("事实", _apply_fact_mutation, _fact_snapshot, _project_fact_event)
     executor.register("事实-写入", _apply_fact_mutation, _fact_snapshot, _project_fact_event)
     executor.register("事实-修订", lambda ctx, c: _apply_fact_mutation(ctx, c, revision=True),
@@ -1281,7 +1354,6 @@ def build_mutation_executor():
                       project=_project_quest_draft_event)
     executor.register("使用物品", _apply_use_item_mutation, _mutation_snapshot, projector)
     executor.register("写角色", _apply_write_character_mutation, _mutation_snapshot, projector)
-    executor.register("剧情事件", _apply_narrative_event_mutation, _mutation_snapshot, projector)
     executor.register("赠与结算", _apply_gift_mutation, _mutation_snapshot, projector)
     executor.register("交易-购买", _apply_buy_mutation, _mutation_snapshot, projector)
     executor.register("交易-出售", _apply_sell_mutation, _mutation_snapshot, projector)
@@ -1502,6 +1574,12 @@ def _act_create_slot(slot, explore, action):
             return [{"ok": False, "msg": error}]
     if not isinstance(char, dict) or not char.get("名称"):
         return [{"ok": False, "msg": "创建角色须传入 角色（完整角色 dict，含名称），或 创建草稿+初始武学"}]
+    # 严格 schema 校验：字段名/值域错误当场打回，不待下游派生才暴露（如「同级极性」致气血为 null）
+    error = validate_character_record(
+        char, skill_lookup=lambda n: dq.get("武学", n),
+        item_lookup=lambda n: dq.get("物品", n))
+    if error:
+        return [{"ok": False, "msg": f"创建角色数据不合规：{error}"}]
     if not sm._slot_writable(slot):
         next_slot = sm.next_slot_number()
         return [{"ok": False,
@@ -1595,10 +1673,11 @@ def _act_restore(slot, explore, action):
     if not target:
         return [{"ok": False, "msg": "加载存档须传入 目标（File_N/时间戳/label/子串）"}]
     state = sm.restore(slot, target)
-    try:
-        qd.clear_all(slot)
-    except OSError:
-        pass
+    for clear_drafts in (qd.clear_all, sd.clear_all):
+        try:
+            clear_drafts(slot)
+        except OSError:
+            pass
     # 旧档落点可能无场景后缀（相邻出口为空）：补该区域驿站出口场景，使读档后出口可用
     pos = state.get("当前位置") or ""
     if pos and "·" not in pos:

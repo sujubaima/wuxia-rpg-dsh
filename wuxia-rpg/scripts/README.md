@@ -49,6 +49,7 @@ python3 scripts/engine.py <command>
 | `judge` | 写入 GM 推演后的剧情与状态变化 | `槽位`、`行为`、`当前剧情`、`场景要素`、`经历概括` |
 | `check` | 执行属性或技艺判定 | `槽位`、`属性`、`判定角色`、`对抗`、`基础成功率` |
 | `random-event` | 判断随机事件是否触发 | `槽位`、`基础成功率` |
+| `scene-prepare` | 批量预校验场景登记、隔离或重连 | `槽位`、`场景`批次数组 |
 | `quest-prepare` | 批量预校验即兴任务创建或扩展蓝图 | `槽位`、`任务`批次数组 |
 | `query` | 查询角色、武学、物品、状态、阵营或场景角色 | `槽位`、`类型`，以及可选查询条件 |
 | `setting` | 聚合查询人物或门派设定 | `槽位`、`目标` |
@@ -82,7 +83,8 @@ python3 scripts/engine.py judge <<'JSON'
   "当前剧情": "沈听雪推开木门，屋内只余一盏将熄的油灯。",
   "场景要素": [
     {"主体": "油灯", "描写": "灯芯发黑，灯油将尽"}
-  ]
+  ],
+  "提及地点": []
 }
 JSON
 ```
@@ -91,8 +93,9 @@ JSON
 
 - `槽位`
 - `行为`
-- `当前剧情`
-- `场景要素`
+- `当前剧情`（必填，战斗推进轮可为空）
+- `场景要素`（非战斗 judge 必填非空，缺省或空数组被打回）
+- `提及地点`（必填，可为空数组）
 - `经历概括`
 
 角色、线索、时间、关系度等变化必须放入 `行为` 数组，不能自创顶层字段。
@@ -112,6 +115,16 @@ JSON
 ```
 
 `check` 对外返回成功或失败及叙事提示，不暴露成功率和掷骰点数。有效判定会写入当前槽位的短期判定留痕，供后续 `judge` 检查叙事是否采用了判定结果。
+
+### 示例：准备地图变化
+
+```bash
+python3 scripts/engine.py scene-prepare <<'JSON'
+{"槽位":1,"场景":[{"操作":"登记","区域":"苏州","场景":"废园","方位出口":{"东":"平江路"}}]}
+JSON
+```
+
+成功后，同轮 `judge` 以 `{"类型":"场景-采用草稿"}` 整批采用；传空 `场景` 数组可撤销草稿。prepare 不改正式地图或轮次。
 
 ### 示例：准备即兴任务
 
@@ -147,6 +160,7 @@ JSON
   → GM 拆分主动行为
   → go 结算确定性成本与直接效果
   → 必要时 check / random-event
+  → 如需地图变化则 scene-prepare
   → 如需新建/扩展即兴任务则 quest-prepare
   → GM 推演剧情
   → judge 采用草稿并写入剧情结果与状态变化
@@ -168,7 +182,7 @@ stateDiagram-v2
     READY --> READY: go 返回界面
     READY --> AWAITING_JUDGE: go 无界面且提交成功
 
-    AWAITING_JUDGE --> AWAITING_JUDGE: check / random-event / quest-prepare / 只读查询
+    AWAITING_JUDGE --> AWAITING_JUDGE: check / random-event / scene-prepare / quest-prepare / 只读查询
     AWAITING_JUDGE --> AWAITING_JUDGE: 重复 go（返回 go_already_committed）
     AWAITING_JUDGE --> READY: judge 成功（非 exploration-battle-ui）
     AWAITING_JUDGE --> AWAITING_BATTLE_START: judge 返回 exploration-battle-ui
@@ -198,6 +212,10 @@ stateDiagram-v2
 - 只有成功返回 `exploration-ui` 的 `judge` 才推进世界交互轮次；
 - 战斗触发、开始和推进可以成功结算，但不推进大世界轮次。
 
+### 场景草稿与 `scene-prepare`
+
+`scene-prepare` 只允许在 `AWAITING_JUDGE` 调用。`场景`数组可批量登记、隔离或重连地点；全部成功后整体替换 `.runtime/scene_drafts.json`，空数组用于撤销。`judge` 以单个`场景-采用草稿`整批重新校验并提交；非空草稿未采用会被打回，`登记场景`/`隔离地点`仅为草稿内部操作，judge 不接受直接提交。prepare 失败不覆盖旧草稿，judge 失败保留草稿，judge 成功或读档后清理。
+
 ### 预设故事线与 `quest-prepare`
 
 新档会按文件名排序载入 `assets/data/quests/*.json`，一个文件对应一个任务，全部以隐藏线索创建。起始节点条件满足时只返回 GM 入口提示；GM 在剧情中实际呈现引子后再用 `线索-发现` 公开。预设目录不使用索引或子目录，任一文件无效都会使建档失败并清理半成品槽位。
@@ -224,7 +242,7 @@ stateDiagram-v2
 |---|---|
 | `界面` | 前端或 GM 应进入的界面类型 |
 | `渲染模式` | 归一渲染模式：dsh / WEB_UI / LLM（未设置按 LLM） |
-| `渲染文本` | 完整界面 Markdown；GM 严格原样输出，包括空字符串 |
+| `渲染文本` | 完整界面 Markdown（仅 LLM 渲染模式返回）；有则原样输出，无（dsh/WEB_UI）则直接输出当前剧情 |
 | `结算` | 本次成功或失败的结算条目 |
 | `剧情描写` | 已写入的当前剧情 |
 | `场景要素` | 当前可见对象及可用特殊指令 |
@@ -234,13 +252,13 @@ stateDiagram-v2
 | `剩余` | 距下一次自动存档的交互轮数 |
 | `错误` | 参数、规则或状态校验错误 |
 
-`界面`是路由标识。全部界面的 Markdown 均由 engine 拼入顶层 `渲染文本`（模板位于 `settle/markdown_ui.py`）：GM 成功返回时严格原样输出，不改写或润色，包括空字符串。`title-ui` 的创建草稿随 action 无状态往返；`battle-ui` / `battle-end-ui` 的规范战报来自 `battle.py`。dsh 模式仍以空文本配合结构化卡片。judge 自检失败返回的 `exploration-ui`+`错误` 不生成 `渲染文本`，须修正后重调。
+`界面`是路由标识。LLM 渲染模式下 engine 把完整 Markdown 拼入顶层 `渲染文本`（模板位于 `settle/markdown_ui.py`）：GM 有 `渲染文本` 时严格原样输出，不改写或润色，包括空字符串。dsh/WEB_UI 模式只返回结构化字段供前端渲染卡片，不生成 `渲染文本`，GM 直接输出当前剧情。`title-ui` 的创建草稿随 action 无状态往返；`battle-ui` / `battle-end-ui` 的规范战报来自 `battle.py`。judge 自检失败返回的 `exploration-ui`+`错误` 不生成 `渲染文本`，须修正后重调。
 
 ## 5. 目录结构
 
 ```text
 scripts/
-├── engine.py                 # 统一 go/judge/check/quest-prepare/query CLI 与库入口
+├── engine.py                 # 统一 go/judge/check/scene-prepare/quest-prepare/query CLI 与库入口
 ├── settle/                   # 大世界结算编排、事务、字段和 UI 数据
 ├── common/                   # DAO、判定、状态、特效加载、时间工具
 ├── world/                    # 场景、地图、角色、交易、配装、武学与事件
@@ -474,7 +492,7 @@ result = engine.go(1, [{"类型": "查看线索"}])
 
 因此，长驻进程必须使用一把覆盖全部槽位的全局锁串行调用引擎，不能只做“每槽位一把锁”。`engine_gateway.py` 统一持有该锁，`engine_service.py` 只处理 HTTP 与生命周期。
 
-九个公开 operation 定义在 Skill 根目录的 `tools.json`，Web 与 DSH 均从 `/api/tools` 注册宿主工具。两者共用服务实现，但默认启动独立进程。多个进程同时写同一存档根目录仍可能发生竞争，应使用不同的 `WUXIA_RPG_SAVE_DIR`，或由更高层确保互斥。
+十个公开 operation 定义在 Skill 根目录的 `tools.json`，Web 与 DSH 均从 `/api/tools` 注册宿主工具。两者共用服务实现，但默认启动独立进程。多个进程同时写同一存档根目录仍可能发生竞争，应使用不同的 `WUXIA_RPG_SAVE_DIR`，或由更高层确保互斥。
 
 ### 渲染模式
 
@@ -499,7 +517,7 @@ result = engine.go(1, [{"类型": "查看线索"}])
 3. project 必须依据真实 before/after 生成事件，无实际变化时不发机械事件；
 4. 明确同批失败时的回滚行为，并更新行为契约和测试。
 
-会影响任务条件的语义结果使用已注册 `事实`；`剧情事件`只记录领域事件。两者都不得直接指定任务阶段。
+会影响任务条件的语义结果一律使用已注册 `事实`，不得直接指定任务阶段。
 
 ### 新增 trigger
 

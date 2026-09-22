@@ -21,6 +21,7 @@ EXPECTED = {
     "wuxia_judge": "judge",
     "wuxia_check": "check",
     "wuxia_random_event": "random-event",
+    "wuxia_scene_prepare": "scene-prepare",
     "wuxia_quest_prepare": "quest-prepare",
     "wuxia_query": "query",
     "wuxia_setting": "setting",
@@ -49,6 +50,7 @@ def fake_engine(calls):
         judge=judge,
         check=record("check"),
         random_event=record("random-event"),
+        scene_prepare=record("scene-prepare"),
         quest_prepare=record("quest-prepare"),
         query=record("query"),
         setting=record("setting"),
@@ -62,7 +64,7 @@ class ToolsManifestContractTest(unittest.TestCase):
         manifest = load_tools_manifest()
         declared = {tool["name"]: tool["operation"] for tool in manifest["tools"]}
         self.assertEqual(declared, EXPECTED)
-        self.assertEqual(manifest["protocol_version"], "1.2")
+        self.assertEqual(manifest["protocol_version"], "1.6")
 
     def test_gateway_implements_every_declared_operation(self):
         gateway = EngineGateway(engine_module=fake_engine([]))
@@ -88,6 +90,7 @@ class EngineGatewayTest(unittest.TestCase):
             "judge": {"槽位": 1, "行为": [], "当前剧情": "测试"},
             "check": {"槽位": 1},
             "random-event": {"槽位": 1},
+            "scene-prepare": {"槽位": 1, "场景": []},
             "quest-prepare": {"槽位": 1, "任务": [{"操作": "创建", "蓝图": {}}]},
             "query": {"槽位": 0, "类型": "角色"},
             "setting": {"槽位": 0, "目标": "武当派"},
@@ -117,6 +120,16 @@ class EngineGatewayTest(unittest.TestCase):
             self.gateway.invoke("go", {"槽位": 1})
         with self.assertRaisesRegex(GatewayProtocolError, "行为（数组）"):
             self.gateway.invoke("judge", {"槽位": 1, "行为": {}})
+
+    def test_scene_prepare_requires_array_items_and_positive_slot(self):
+        with self.assertRaisesRegex(GatewayProtocolError, "正整数"):
+            self.gateway.invoke("scene-prepare", {"槽位": 0, "场景": []})
+        with self.assertRaisesRegex(GatewayProtocolError, "场景（数组）"):
+            self.gateway.invoke("scene-prepare", {"槽位": 1})
+        with self.assertRaisesRegex(GatewayProtocolError, "第 1 项须为对象"):
+            self.gateway.invoke("scene-prepare", {"槽位": 1, "场景": ["bad"]})
+        with self.assertRaisesRegex(GatewayProtocolError, "操作须为"):
+            self.gateway.invoke("scene-prepare", {"槽位": 1, "场景": [{}]})
 
     def test_quest_prepare_requires_batch_items_and_positive_slot(self):
         with self.assertRaisesRegex(GatewayProtocolError, "正整数"):
