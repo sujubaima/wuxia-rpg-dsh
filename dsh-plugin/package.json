@@ -15,11 +15,15 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./presets/wuxia.patch.yml": "./presets/wuxia.patch.yml",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
-      "patch": "./cordis.patch.yml"
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/wuxia.patch.yml"
+      ]
     },
     "client": {
       "inject": [

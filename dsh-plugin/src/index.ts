@@ -1,6 +1,7 @@
 /** 武侠RPG dsh 插件 Host 入口：装配 engine service、工具与隐藏界面命令。 */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import {
   Config as ConfigSchema,
   DEFAULT_TIMEOUT,
@@ -11,6 +12,13 @@ import { registerWuxiaCommands } from './host/commands.js'
 import { startEngineService } from './host/engine-service.js'
 import { registerWuxiaPanelCommand } from './host/panel-command.js'
 import { registerWuxiaTools } from './host/tools.js'
+
+// 会话格式 v4 起没有共享的 'plugin' source kind，各生产者声明自己的 kind。
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'wuxia-rpg': { kind: 'wuxia-rpg' } & ContextFormed
+  }
+}
 
 export const name = 'wuxia-rpg'
 export const inject = ['tools', 'commands']

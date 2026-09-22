@@ -17,12 +17,12 @@ async function loadManifest() {
   return parseToolsManifest(JSON.parse(await readFile(MANIFEST_PATH, 'utf8')))
 }
 
-test('shared Tools Schema declares nine unique operations', async () => {
+test('shared Tools Schema declares ten unique operations', async () => {
   const manifest = await loadManifest()
-  assert.equal(manifest.protocol_version, '1.2')
-  assert.equal(manifest.tools.length, 9)
-  assert.equal(new Set(manifest.tools.map(tool => tool.name)).size, 9)
-  assert.equal(new Set(manifest.tools.map(tool => tool.operation)).size, 9)
+  assert.equal(manifest.protocol_version, '1.6')
+  assert.equal(manifest.tools.length, 10)
+  assert.equal(new Set(manifest.tools.map(tool => tool.name)).size, 10)
+  assert.equal(new Set(manifest.tools.map(tool => tool.operation)).size, 10)
 })
 
 test('standard JSON Schema converts to DSH parameter specs', async () => {
