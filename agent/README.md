@@ -7,6 +7,10 @@
 - **会话上下文管理**(`core/session.py`)
   - 上限 1M (估算 token); 超限先掉模型压缩历史成摘要钉在 system 前缀, 兜有才裁剪
   - `assistant(tool_calls)` 与 `tool` 结果始终同组, 不产生孤立 tool 消息
+  - `use_skill` 不算过程性工具: 历史剥离与压缩摘要均豁免; 被压缩掉的技能指令持久保留并拼回导出头部 (同名技能以最新加载为准)
+  - `wuxia_read_reference` 仅历史剥离豁免 (规则文档始终随历史拼接), 压缩照常
+  - 历史轮 (最后一条 user 之前) 默认不拼接 thinking 与工具调用内容, 仅保留正文; 由 `Agent(include_thinking=..., include_tools=...)` 开启, 当前轮始终完整保留
+  - 压缩摘要输入同样默认不含 thinking 与工具调用内容, 由 `Agent(compress_thinking=..., compress_tools=...)` 开启, 与拼接开关相互独立
 - **工具识别与调用**(`core/tools.py`)
   - OpenAI 兼容 `tool_calls` 协议, 装饰器一行注册新工具
   - 内置: `get_current_time`、`calculator`(AST 安全求值)、`read`、`write`、`list`、`bash`(执行技能脚本, 支持 stdin/cwd/超时)
