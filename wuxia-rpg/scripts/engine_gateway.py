@@ -94,6 +94,7 @@ class EngineGateway:
         self._handlers = {
             "go": self._go,
             "judge": self._judge,
+            "plot-writing": self._plot_writing,
             "check": self.engine.check,
             "random-event": self.engine.random_event,
             "scene-prepare": self._scene_prepare,
@@ -148,17 +149,33 @@ class EngineGateway:
         return self.engine.go(payload["槽位"], actions)
 
     def _judge(self, payload):
-        actions = payload.get("行为")
-        if not isinstance(actions, list):
-            raise GatewayProtocolError("judge 缺少 行为（数组）")
+        if "行为" in payload and not isinstance(payload["行为"], list):
+            raise GatewayProtocolError("judge 行为须为数组")
+        if "当前剧情" in payload and not isinstance(payload["当前剧情"], str):
+            raise GatewayProtocolError("judge 当前剧情须为字符串")
+        if set(payload) - {"槽位", "行为", "当前剧情"}:
+            raise GatewayProtocolError("judge 仅允许 槽位、战斗行为与战斗当前剧情")
+        if "当前剧情" in payload and "行为" not in payload:
+            raise GatewayProtocolError("judge 当前剧情仅限战斗行为")
         return self.engine.judge(payload["槽位"], payload)
+
+    def _plot_writing(self, payload):
+        if "行为" in payload and not isinstance(payload["行为"], list):
+            raise GatewayProtocolError("plot-writing 行为须为数组")
+        if not isinstance(payload.get("当前剧情"), str) or not payload["当前剧情"].strip():
+            raise GatewayProtocolError("plot-writing 缺少 当前剧情（非空字符串）")
+        if not isinstance(payload.get("场景要素"), list) or not payload["场景要素"]:
+            raise GatewayProtocolError("plot-writing 缺少 场景要素（非空数组）")
+        if not isinstance(payload.get("提及地点"), list):
+            raise GatewayProtocolError("plot-writing 缺少 提及地点（数组）")
+        return self.engine.plot_writing(payload["槽位"], payload)
 
     def _scene_prepare(self, payload):
         if payload["槽位"] <= 0:
             raise GatewayProtocolError("scene-prepare 槽位须为正整数")
         scenes = payload.get("场景")
-        if not isinstance(scenes, list):
-            raise GatewayProtocolError("scene-prepare 缺少 场景（数组）")
+        if not isinstance(scenes, list) or not scenes:
+            raise GatewayProtocolError("scene-prepare 缺少 场景（非空数组）")
         for index, scene in enumerate(scenes, 1):
             if not isinstance(scene, dict):
                 raise GatewayProtocolError(f"scene-prepare 第 {index} 项须为对象")
@@ -177,8 +194,18 @@ class EngineGateway:
         for index, task in enumerate(tasks, 1):
             if not isinstance(task, dict):
                 raise GatewayProtocolError(f"quest-prepare 第 {index} 项须为对象")
-            if task.get("操作") not in ("创建", "扩展"):
-                raise GatewayProtocolError(f"quest-prepare 第 {index} 项操作须为 创建 或 扩展")
-            if not isinstance(task.get("蓝图"), dict):
+            operation = task.get("操作")
+            if operation not in ("创建", "扩展", "修改", "关闭"):
+                raise GatewayProtocolError(
+                    f"quest-prepare 第 {index} 项操作须为 创建、扩展、修改 或 关闭")
+            blueprint = task.get("蓝图")
+            if not isinstance(blueprint, dict):
                 raise GatewayProtocolError(f"quest-prepare 第 {index} 项缺少 蓝图（对象）")
+            if operation == "关闭":
+                if (not isinstance(blueprint.get("名称"), str)
+                        or not blueprint["名称"].strip()
+                        or not isinstance(blueprint.get("描述"), str)
+                        or not blueprint["描述"].strip()):
+                    raise GatewayProtocolError(
+                        f"quest-prepare 第 {index} 项关闭蓝图须含非空 名称 和 描述")
         return self.engine.quest_prepare(payload)

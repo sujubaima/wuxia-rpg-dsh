@@ -19,6 +19,7 @@ if str(SCRIPTS) not in sys.path:
 from common import dao as dq  # noqa: E402
 from store import save_manager as sm  # noqa: E402
 from store import turn_state  # noqa: E402
+from store import turn_workspace as workspace  # noqa: E402
 from world import scene as sc  # noqa: E402
 
 ENGINE = SCRIPTS / "engine.py"
@@ -33,11 +34,12 @@ def judge_elements(save_dir, slot, changes=None):
     for action in changes or []:
         if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
             position = action.get("位置") or action.get("目的地")
-    if not position:
-        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
-    region, _, scene = position.partition("·")
-    stype = sc.scene_type(slot, region, scene)
-    npc = sc.scene_npc(slot, region, scene)
+    with workspace.slot_view("pending" if workspace.pending_exists(slot, save_dir) else "active"):
+        if not position:
+            position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+        region, _, scene = position.partition("·")
+        stype = sc.scene_type(slot, region, scene)
+        npc = sc.scene_npc(slot, region, scene)
     commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
     if npc and commands:
         return [{"主体": npc, "描写": "当值",
@@ -65,14 +67,20 @@ def character(name):
 
 
 def run_engine(save_dir, slot, actions, command="go", **extra):
-    payload = {"槽位": slot, "行为": actions, **extra}
-    if command == "judge":
+    payload = {"槽位": slot, "行为": actions, **extra} if command != "turn-reset" else {"槽位": slot}
+    if command == "judge" and set(payload) != {"槽位", "行为"}:
+        # 普通回合的剧情与变更只能由 plot-writing 暂存；judge 仅接槽位。
         payload.setdefault("提及地点", [])
-        # 场景要素为非战斗 judge 必填：骨架按落定位置自动补全（显式传入时不覆盖）
-        battle = any(isinstance(a, dict) and a.get("类型") in _BATTLE_JUDGE_ACTIONS
-                     for a in actions or [])
-        if "场景要素" not in payload and not battle:
+        if "场景要素" not in payload:
             payload["场景要素"] = judge_elements(save_dir, slot, actions)
+        drafted = run_engine(save_dir, slot, actions, command="plot-writing", **{
+            key: value for key, value in payload.items() if key not in {"槽位", "行为"}
+        })
+        if drafted.get("错误"):
+            return drafted
+        payload = {"槽位": slot}
+    elif command == "judge":
+        payload = {"槽位": slot}
     env = {**os.environ, "WUXIA_RPG_SAVE_DIR": save_dir}
     proc = subprocess.run(
         [sys.executable, str(ENGINE), command],
@@ -124,19 +132,31 @@ class SlotAllocationTest(unittest.TestCase):
         self.assertIsNone(created.get("错误"), created)
         self.assertEqual(created.get("槽位"), 5)
         self.assertEqual(settlement.get("新建slot"), 5)
-        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_JUDGE)
+        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_PLOT)
         self.assertTrue(Path(self.save_dir, "slot_5").is_dir())
+        self.assertFalse(workspace.active_exists(5, self.save_dir))
         self.assertFalse(Path(self.save_dir, "slot_1").exists())
-        quests = sm.read_quest_state(5, self.save_dir)
-        facts = sm.read_world_facts(5, self.save_dir)
+        with workspace.slot_view("pending"):
+            quests = sm.read_quest_state(5, self.save_dir)
+            facts = sm.read_world_facts(5, self.save_dir)
+            explore = sm.read_explore(5, self.save_dir)
         self.assertEqual(len(quests.get("definitions", {})), 19)
         self.assertTrue(all(
             runtime.get("lifecycle") == "hidden"
             for runtime in quests.get("runtimes", {}).values()
         ))
         self.assertIn("player.region@world", facts.get("records", {}))
-        self.assertEqual((sm.read_explore(5, self.save_dir) or {}).get("任务摘要及进度"), [])
-
+        self.assertEqual((explore or {}).get("任务摘要及进度"), [])
+        self.assertEqual(sm.list_all_saves(save_dir=self.save_dir), [])
+        # 未发布的新档也占用物理槽位，避免下一位建档者撞号。
+        self.assertEqual(run_engine(self.save_dir, 0, [{"类型": "开始游戏"}]).get("next_slot"), 6)
+        from engine import OPENING_ERA_TEMPLATE
+        opened = run_engine(self.save_dir, 5, [], command="judge",
+                            当前剧情=OPENING_ERA_TEMPLATE + "\n\n越五峰踏入江湖。")
+        self.assertIsNone(opened.get("错误"), opened)
+        self.assertTrue(workspace.active_exists(5, self.save_dir))
+        self.assertEqual(sm.read_explore(5, self.save_dir).get("当前剧情"),
+                         OPENING_ERA_TEMPLATE + "\n\n越五峰踏入江湖。")
         refreshed = run_engine(self.save_dir, 0, [{"类型": "开始游戏"}])
         self.assertEqual(refreshed.get("next_slot"), 6)
 
@@ -146,7 +166,7 @@ class SlotAllocationTest(unittest.TestCase):
             5,
             [{"类型": "创建角色", "角色": character("守槽人")}],
         )
-        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_JUDGE)
+        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_PLOT)
         slot_root = Path(self.save_dir, "slot_5")
         before = directory_snapshot(slot_root)
 
@@ -206,12 +226,14 @@ class SlotAllocationTest(unittest.TestCase):
         )
         self.assertIsNone(retried.get("错误"), retried)
         self.assertEqual(retried.get("槽位"), retry_slot)
-        self.assertEqual(retried.get("turn_state"), turn_state.AWAITING_JUDGE)
+        self.assertEqual(retried.get("turn_state"), turn_state.AWAITING_PLOT)
 
-        saved = dq.read_character_file(
-            "重试者",
-            data_dir=sm.slot_data_dir(retry_slot, self.save_dir),
-        )
+        with workspace.slot_view("pending"):
+            saved = dq.read_character_file(
+                "重试者",
+                data_dir=sm.slot_data_dir(retry_slot, self.save_dir),
+            )
+        self.assertFalse(workspace.active_exists(retry_slot, self.save_dir))
         self.assertIsNotNone(saved)
         self.assertEqual(saved.get("铜钱"), 1500)
         items = saved.get("物品") or []
@@ -237,7 +259,7 @@ class SlotAllocationTest(unittest.TestCase):
             1,
             [{"类型": "创建角色", "角色": character("开卷人")}],
         )
-        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_JUDGE)
+        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_PLOT)
         slot_root = Path(self.save_dir, "slot_1")
         before = directory_snapshot(slot_root)
 
@@ -247,14 +269,17 @@ class SlotAllocationTest(unittest.TestCase):
             {}, {"当前剧情": ""}, {"当前剧情": "   "},
             {"当前剧情": "开卷人负剑出蜀，初入江湖。"},
         )
+        premature = run_engine(self.save_dir, 1, [], command="judge")
+        self.assertEqual(premature.get("状态冲突"), "judge_not_expected")
         for bad_payload in bad_narratives:
             rejected = run_engine(
-                self.save_dir, 1, [], command="judge", **bad_payload
+                self.save_dir, 1, [], command="plot-writing", 提及地点=[],
+                场景要素=judge_elements(self.save_dir, 1), **bad_payload
             )
             message = str(rejected.get("错误") or "")
-            self.assertIn("开场白", message, rejected)
-            self.assertIn("大明万历年间", message, rejected)
-            self.assertEqual(rejected.get("turn_state"), turn_state.AWAITING_JUDGE)
+            self.assertIn("plot-writing 须提供非空 当前剧情" if not
+                          str(bad_payload.get("当前剧情") or "").strip() else "固定时代背景", message, rejected)
+            self.assertEqual(rejected.get("turn_state"), turn_state.AWAITING_PLOT)
             self.assertEqual(directory_snapshot(slot_root), before)
 
         opening_plot = (
@@ -281,7 +306,7 @@ class SlotAllocationTest(unittest.TestCase):
             2,
             [{"类型": "创建角色", "角色": character("短句客")}],
         )
-        self.assertEqual(sentence_only.get("turn_state"), turn_state.AWAITING_JUDGE)
+        self.assertEqual(sentence_only.get("turn_state"), turn_state.AWAITING_PLOT)
         brief = run_engine(
             self.save_dir,
             2,
@@ -362,26 +387,33 @@ class SlotAllocationTest(unittest.TestCase):
             3,
         )
 
-    def test_delete_bypasses_pending_turn_state(self):
+    def test_delete_rejects_pending_turn_state(self):
         from store import turn_state
 
-        # 删除存档是存档管理操作：slot 卡在 AWAITING_JUDGE / AWAITING_BATTLE_START 时也须放行
-        for slot, pending in (
-            (3, turn_state.AWAITING_JUDGE),
-            (4, turn_state.AWAITING_BATTLE_START),
-        ):
-            created = run_engine(
-                self.save_dir,
-                slot,
-                [{"类型": "创建角色", "角色": character("卡状态者")}],
-            )
-            self.assertIsNone(created.get("错误"), created)
-            turn_state.write_state(
-                slot, pending, origin="测试", save_dir=self.save_dir,
-            )
-            deleted = run_engine(self.save_dir, slot, [{"类型": "删除存档"}])
-            self.assertTrue((deleted.get("结算") or [{}])[0].get("ok"), deleted)
-            self.assertFalse(Path(self.save_dir, f"slot_{slot}").exists())
+        # 未发布的新档不能删除；先显式 turn-reset 撤销占位。
+        created = run_engine(self.save_dir, 3, [{"类型": "创建角色", "角色": character("卡状态者")}])
+        self.assertEqual(created.get("turn_state"), turn_state.AWAITING_PLOT)
+        blocked = run_engine(self.save_dir, 3, [{"类型": "删除存档"}])
+        self.assertEqual(blocked.get("状态冲突"), "go_already_staged")
+        reset = run_engine(self.save_dir, 3, [], command="turn-reset")
+        self.assertTrue(reset.get("ok"), reset)
+        self.assertFalse(Path(self.save_dir, "slot_3").exists())
+
+        # 已发布的存档先暂存一轮，也须显式 reset 才能删除。
+        created = run_engine(self.save_dir, 4, [{"类型": "创建角色", "角色": character("已发布者")}])
+        self.assertIsNone(created.get("错误"), created)
+        from engine import OPENING_ERA_TEMPLATE
+        opened = run_engine(self.save_dir, 4, [], command="judge",
+                            当前剧情=OPENING_ERA_TEMPLATE + "\n\n已发布者踏入江湖。")
+        self.assertIsNone(opened.get("错误"), opened)
+        staged = run_engine(self.save_dir, 4, [{"类型": "交谈观察", "目标": "周遭"}])
+        self.assertEqual(staged.get("turn_state"), turn_state.AWAITING_PLOT)
+        blocked = run_engine(self.save_dir, 4, [{"类型": "删除存档"}])
+        self.assertEqual(blocked.get("状态冲突"), "go_already_staged")
+        self.assertTrue(run_engine(self.save_dir, 4, [], command="turn-reset").get("ok"))
+        deleted = run_engine(self.save_dir, 4, [{"类型": "删除存档"}])
+        self.assertTrue((deleted.get("结算") or [{}])[0].get("ok"), deleted)
+        self.assertFalse(Path(self.save_dir, "slot_4").exists())
 
     def test_save_manager_cleans_partial_slot_and_does_not_mutate_conflict_payload(self):
         first = character("直接甲")

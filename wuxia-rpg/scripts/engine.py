@@ -1,28 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""大世界游历统一结算前端——go/judge 两步式。
+"""大世界游历统一结算前端。
 
-- **engine go**：玩家主动指令的机制结算（休息/远行/使用物品/购买/出售/遣散/武学精进/
-  战斗操控/配置/查询/存档等）。落盘机制后果，**不增轮次、不自动存档**。**返回带 `界面`
-  则按对应渲染文档直接渲染**；以下情形**隐藏 `界面`、GM 据「无界面→调 judge」下调
-  engine judge：空行为数组占位、休息/远行（徒步）/远行（舟车）/交谈观察/搜查翻找/其他行为，或战斗操控且战斗结束
-  那一回合。普通配置/查询/存档类带 `界面` 直接渲染。
-- **engine judge**：GM 基于 go 的既成结果推演后的裁定落盘。行为数组平铺一等状态变更
-  条目（无剧情推动包壳）+ 顶层叙事字段（当前剧情必填/场景要素必填非空/经历概括）。任一状态
-  变更非法则整体回滚本轮 judge，go 已落盘的机制后果不受影响。**仅返回
-  exploration-ui 的 judge 结算成功才推进交互轮次**（与传入状态变更内容无关）并可能
-  自动存档；战斗-开始/战斗-触发 为 judge 专属 action（推演产物，产出 battle-ui /
-  exploration-battle-ui），结算成功但**不推进轮次**。
-- **存档判定**：轮次仅由返回 exploration-ui 的 judge 推进；轮次%周期==0 时
-  save_manager.save 自动存档。
-- **状态镜像**：写 explore.json（持久状态 + 叙事，经历概括由 judge 顶层入参覆盖、未传则保留）。
-- **分工边界**：battle.py 战后已自落盘气血/内力/物品消耗；经验/处决/战利品由 GM 经
-  judge 状态变更落盘。战斗中途禁止 返回游戏（须先打完）。
-- **go/judge 状态一致性**：go 落盘后至 judge 调用之间，不得绕过 engine 直接改角色文件。
+普通叙事回合：go 暂存机制后果 → 按需 random-event/check → plot-writing
+一次性保存剧情和拟议变更 → 按需各执行一次 scene-prepare/quest-prepare →
+judge 只传槽位并自动采用全部草稿，完成校验后一次发布全部正式状态。
+即时界面、管理操作和战斗交互沿用专用结算；探索轮次仅由 exploration-ui
+的 judge 推进并按周期自动存档。
 
 CLI（均从 stdin 读取 JSON）：
   python3 scripts/engine.py go
+  python3 scripts/engine.py plot-writing
   python3 scripts/engine.py judge
+  python3 scripts/engine.py turn-reset
   python3 scripts/engine.py check
   python3 scripts/engine.py random-event
   python3 scripts/engine.py scene-prepare
@@ -36,7 +26,8 @@ import copy
 import os, sys
 import json
 from common import dao as dq
-from common.json_io import JsonMissingError, JsonReadError, warn_json_read
+from common.json_io import (JsonMissingError, JsonReadError, atomic_write_json,
+                            read_json, warn_json_read)
 from common.render_mode import render_mode
 from store import save_manager as sm
 from world import scene as sc
@@ -64,7 +55,10 @@ from store import quest_drafts as _quest_drafts
 from store import scene_drafts as _scene_drafts
 from store.battle_last import write_battle_last as _write_battle_last, battle_last_path as _battle_last_path
 from store.check_log import missing_check_hints as _missing_check_hints, append_check as _append_check
+from store import check_log as _check_log
 from store import turn_state as _turn_state
+from store import turn_workspace as _workspace
+from store import plot_drafts as _plot_drafts
 from common import check as _check
 from common import dao as _dq
 from world import map_query as _map_query
@@ -150,7 +144,7 @@ def _is_restore_only(actions):
 
 
 def _is_delete_only(actions):
-    """删除存档是跨回合的存档管理操作，任何回合状态下都放行（同 加载存档 待遇）。"""
+    """删除存档是独立管理操作，目标槽位须无待提交工作。"""
     items = _action_list(actions)
     return len(items) == 1 and isinstance(items[0], dict) and items[0].get("类型") == "删除存档"
 
@@ -165,7 +159,7 @@ _LOBBY_ACTIONS = {"开始游戏", "标题-操作"}
 def _claim_batch_valid(actions):
     items = _action_list(actions)
     exclusive = [a for a in items if isinstance(a, dict)
-                 and a.get("类型") in (_CLAIM_ACTIONS | {"加载存档"})]
+                 and a.get("类型") in (_CLAIM_ACTIONS | {"加载存档", "删除存档"})]
     return not exclusive or (len(items) == 1 and len(exclusive) == 1)
 
 
@@ -256,7 +250,8 @@ def _settle_go(slot, actions=None):
         valid.append(a)
 
     # 持久状态载体：从 explore.json 读，handler 直接改它，最后统一落盘
-    explore = sm.read_explore(slot) or {}
+    explore = ({} if any(a.get("类型") == "创建角色" for a in valid)
+               else sm.read_explore(slot) or {})
 
     # 体力兜底（仅扣体力的行为类）。
     if any(a.get("类型") in _STAMINA_COST_ACTIONS for a in valid):
@@ -361,7 +356,7 @@ def _settle_go(slot, actions=None):
         # 推演前强制判定思考提示：GM 下调 judge 前必先回溯本回合是否该判
         resp["GM提示"] = "推演剧情前先自问：本回合剧情发展是否依赖角色某项技艺/属性水平高低？涉及即先调 wuxia_check（不可用时 engine check）掷骰，并据结果推演。"
     # 只读 go 不得覆盖待 judge 的机制提示；其他 go 仍覆盖写并由 judge 消费一次。
-    if not (types <= read_only):
+    if not (types <= read_only) and not (types <= {"删除存档"}):
         _write_tips(state_slot, results)
     return _attach_quest_hints(resp, quest_hints)
 
@@ -443,6 +438,49 @@ def _player_element_hits(slot, elements, changes=None):
             if not sub[:-len(matched)].endswith("的"):
                 hits.append(sub)
     return hits
+
+def _scene_element_command_error(slot, explore, elements):
+    """返回场景要素特殊指令与最终落点不匹配的错误。"""
+    if elements is None:
+        return None
+    cur_pos = explore.get("当前位置") or ""
+    cur_region, _, cur_scene = cur_pos.partition("·")
+    stype = sc.scene_type(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
+    npc = sc.scene_npc(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
+    req_cmds = _SCENE_TYPE_COMMANDS.get(stype) if stype else None
+    command_elements = [e for e in elements if e.get("特殊指令")]
+
+    for element in command_elements:
+        subject = str(element.get("主体") or "")
+        if not (npc and req_cmds and subject.startswith(npc)):
+            if npc and req_cmds:
+                return (f"场景要素【{subject}】不是当前场景绑定的功能NPC【{npc}】，"
+                        "不得携带特殊指令")
+            return (f"当前场景【{cur_scene}】无绑定功能NPC，"
+                    f"场景要素【{subject}】不得携带特殊指令")
+
+    if npc and req_cmds:
+        npc_elements = [e for e in elements
+                        if str(e.get("主体") or "").startswith(npc)]
+        if not npc_elements:
+            return (f"当前场景【{cur_scene}】为功能场景，`场景要素` "
+                    f"必含一条主体以功能NPC【{npc}】开头的要素")
+        have = [c.get("名称") for e in npc_elements
+                for c in (e.get("特殊指令") or []) if isinstance(c, dict)]
+        missing = [c for c in req_cmds if c not in have]
+        extra = [c for c in have if c not in req_cmds]
+        duplicate = len(have) != len(set(have))
+        if missing or extra or duplicate:
+            details = []
+            if missing:
+                details.append(f"缺少 {missing}")
+            if extra:
+                details.append(f"不允许 {extra}")
+            if duplicate:
+                details.append("存在重复指令")
+            return f"功能NPC【{npc}】的特殊指令须严格为 {req_cmds}（{'；'.join(details)}）"
+    return None
+
 
 def _settle_judge(slot, changes=None, narrative=None):
     """engine judge：GM 基于 go 的既成状态（go 已落盘机制后果）推演后，裁定落盘。
@@ -593,7 +631,7 @@ def _settle_judge(slot, changes=None, narrative=None):
             return _build_response(
                 slot, [], False, sm.rounds_until_save(slot), [],
                 error=f"提及地点未登记：{'、'.join(unregistered)}——若允许玩家前往，请先用 "
-                      f"scene-prepare 准备登记并在 judge 加入「场景-采用草稿」；若不可达或无需涉足，"
+                      f"scene-prepare 准备登记，judge 会自动采用；若不可达或无需涉足，"
                       f"请将其从「提及地点」中移除",
                 gm_error=True)
 
@@ -650,55 +688,14 @@ def _settle_judge(slot, changes=None, narrative=None):
         # 绑定的功能NPC要素上，且须严格匹配场景功能（驿站→远行（舟车），店铺→购买/出售，
         # 客栈→投宿）。普通NPC、物件和环境要素不得携带特殊指令。
         # 校验置于变更应用之后，使 抵达/远行 改变位置后的新场景亦受约束。
-        if elements is not None:
-            cur_pos = explore.get("当前位置") or ""
-            cur_region, _, cur_scene = cur_pos.partition("·")
-            stype = sc.scene_type(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
-            npc = sc.scene_npc(slot, cur_region, cur_scene, staged=est._SCENE_TYPE_STAGED)
-            req_cmds = _SCENE_TYPE_COMMANDS.get(stype) if stype else None
-            command_elements = [e for e in elements if e.get("特殊指令")]
-
-            for element in command_elements:
-                subject = str(element.get("主体") or "")
-                if not (npc and req_cmds and subject.startswith(npc)):
-                    if npc and req_cmds:
-                        error = (f"场景要素【{subject}】不是当前场景绑定的功能NPC【{npc}】，"
-                                 "不得携带特殊指令")
-                    else:
-                        error = (f"当前场景【{cur_scene}】无绑定功能NPC，"
-                                 f"场景要素【{subject}】不得携带特殊指令")
-                    return _build_response(slot, [], False, sm.rounds_until_save(slot), results,
-                                           error=error, gm_error=True)
-
-            if npc and req_cmds:
-                npc_elements = [e for e in elements
-                                if str(e.get("主体") or "").startswith(npc)]
-                if not npc_elements:
-                    return _build_response(slot, [], False, sm.rounds_until_save(slot), results,
-                                           error=f"当前场景【{cur_scene}】为功能场景，`场景要素` 必含一条主体以功能NPC【{npc}】开头的要素",
-                                           gm_error=True)
-                have = [c.get("名称") for e in npc_elements
-                        for c in (e.get("特殊指令") or []) if isinstance(c, dict)]
-                missing = [c for c in req_cmds if c not in have]
-                extra = [c for c in have if c not in req_cmds]
-                duplicate = len(have) != len(set(have))
-                if missing or extra or duplicate:
-                    details = []
-                    if missing:
-                        details.append(f"缺少 {missing}")
-                    if extra:
-                        details.append(f"不允许 {extra}")
-                    if duplicate:
-                        details.append("存在重复指令")
-                    return _build_response(
-                        slot, [], False, sm.rounds_until_save(slot), results,
-                        error=f"功能NPC【{npc}】的特殊指令须严格为 {req_cmds}（{'；'.join(details)}）",
-                        gm_error=True,
-                    )
+        command_error = _scene_element_command_error(slot, explore, elements)
+        if command_error:
+            return _build_response(slot, [], False, sm.rounds_until_save(slot), results,
+                                   error=command_error, gm_error=True)
 
         # 打回校验：任务已行进至扩展点（前置齐、条件真、未激活）而本轮未扩展。
-        # 整体打回（commit 前，磁盘零写入；tips 与回合号原样保留供重调），
-        # GM 须 quest-prepare 准备扩展、经 线索-采用草稿 采纳后重新 judge。
+        # 整体打回（commit 前，磁盘零写入；tips 与回合号原样保留供重调）；
+        # 若本轮尚未执行 quest-prepare，可准备扩展或关闭草稿后重试 judge。
         # 战斗类 judge 豁免（只提示不打回），避免战斗中强制插入扩展；战后普通 judge 再拦。
         gates = pending_extension_gates(session.world_facts, session.quest_state)
         if gates and battle_entries:
@@ -713,10 +710,9 @@ def _settle_judge(slot, changes=None, narrative=None):
             )
             return _build_response(
                 slot, [], False, sm.rounds_until_save(slot), results,
-                error=(f"{described}已到达但未扩展：本轮 judge 打回，"
-                       "须先以 quest-prepare 准备该扩展点的扩展蓝图，"
-                       "并在 judge 行为中经 线索-采用草稿 采纳后重新提交；"
-                       "若该方向无继续推演必要，可以 关闭 操作强关该扩展点"),
+                error=(f"{described}已到达但未扩展：本轮 judge 打回；"
+                       "若本轮尚未执行 quest-prepare，须准备该扩展点的扩展蓝图，"
+                       "或以 关闭 操作强关该扩展点，再重试 judge；草稿由 judge 自动采用"),
                 gm_error=True,
             )
 
@@ -793,8 +789,8 @@ def _settle_judge(slot, changes=None, narrative=None):
         attach_render_text(base)
     return _attach_quest_hints(base, quest_hints)
 
-def go(slot, actions=None):
-    """engine go 入口：按槽位策略执行结算并统一迁移回合状态。
+def _legacy_go(slot, actions=None):
+    """旧式及战斗专用 go 入口：按槽位策略执行结算并统一迁移回合状态。
 
     正式槽位传空 actions 表示本轮所有行动均受剧情约束阻止，仅占位进入 judge。
     """
@@ -860,8 +856,8 @@ def go(slot, actions=None):
     return _with_turn_state(result, new_state["state"])
 
 
-def judge(slot, payload=None):
-    """engine judge 入口：GM 推演后的裁定落盘。
+def _legacy_judge(slot, payload=None):
+    """旧式及战斗专用 judge 入口：GM 推演后的裁定落盘。
     payload: {"槽位":N(由调用方剥离), "行为":[...], "当前剧情":..., "场景要素":[...], "经历概括":...}
     顶层仅允许 行为/当前剧情/场景要素/经历概括 四字段；其余（如把线索/状态变更误放顶层）
     一律报错，避免静默忽略。"""
@@ -923,7 +919,7 @@ def judge(slot, payload=None):
             result = _build_response(
                 slot, [], False, sm.rounds_until_save(slot), [],
                 error="judge 不再直接接受「登记场景/隔离地点」；请先 scene-prepare，"
-                      "再在 judge 行为中提交「场景-采用草稿」",
+                      "普通回合将由 judge 自动采用草稿",
                 gm_error=True,
             )
             return _with_turn_state(result, state)
@@ -949,8 +945,7 @@ def judge(slot, payload=None):
         if has_scene_draft and not adoptions:
             result = _build_response(
                 slot, [], False, sm.rounds_until_save(slot), [],
-                error="本轮已有未采纳的场景草稿；请在 judge 行为中加入「场景-采用草稿」，"
-                      "或用 scene-prepare 传空「场景」数组清除草稿",
+                error="本轮已有未采纳的场景草稿；普通回合须只传槽位，由 judge 自动采用",
                 gm_error=True,
             )
             return _with_turn_state(result, state)
@@ -1007,6 +1002,340 @@ def judge(slot, payload=None):
     return _with_turn_state(result, new_state["state"])
 
 
+def _is_deferred_arrival(slot, action):
+    if action.get("类型") != "抵达" or action.get("角色"):
+        return False
+    destination = action.get("位置") or action.get("目的地")
+    if not isinstance(destination, str) or "·" not in destination:
+        return False
+    region, _, scene = destination.partition("·")
+    return bool(region and scene and scene not in (sc.merged_scenes(slot, region) or {}))
+
+
+def _plot_error(slot, message, state=_turn_state.AWAITING_PLOT):
+    return _with_turn_state(_build_response(
+        slot, [], False, sm.rounds_until_save(slot), [], error=message, gm_error=True), state)
+
+
+def _management_delete(slot, actions):
+    """删除只锁目标槽位，不先锁调用者；避免双向跨槽删除造成锁顺序反转。"""
+    action = _action_list(actions)[0]
+    try:
+        target_slot = int(action["槽位"]) if action.get("槽位") is not None else slot
+    except (TypeError, ValueError):
+        target_slot = None
+    if sm._slot_writable(target_slot):
+        with _workspace.slot_lock(target_slot):
+            if _workspace.pending_exists(target_slot):
+                with _workspace.slot_view("pending"):
+                    stage = _turn_state.read_state(target_slot)["state"]
+                return _turn_error(slot, "go_already_staged",
+                                   f"槽位 {target_slot} 有待提交回合，请先完成当前回合",
+                                   stage)
+            results = _ACTION_HANDLERS["删除存档"](slot, {}, action)
+    else:
+        results = _ACTION_HANDLERS["删除存档"](slot, {}, action)
+    failures = [str(r.get("msg")) for r in results if not r.get("ok")]
+    response = _build_response(slot, [action], False, 0, _public_results(results),
+                               error="操作失败：" + "；".join(failures) if failures else None)
+    return _with_turn_state(response, _turn_state.READY)
+
+
+def _management_restore(slot, actions):
+    """独立管理读档：复制提交代、完成重建和界面构造，最后原子切换提交指针。"""
+    with _workspace.slot_lock(slot), _workspace.slot_view("active"):
+        if not _workspace.active_exists(slot):
+            return _turn_error(slot, "slot_missing", "槽位不存在，请先创建角色",
+                               _turn_state.READY)
+        if _workspace.pending_exists(slot):
+            with _workspace.slot_view("pending"):
+                stage = _turn_state.read_state(slot)["state"]
+            return _turn_error(slot, "go_already_staged",
+                               "槽位有待提交回合，请先完成当前回合",
+                               stage)
+        state = _turn_state.read_state(slot)["state"]
+        if state != _turn_state.READY:
+            return _turn_error(slot, "go_already_committed",
+                               "槽位有未完成回合，请先完成裁定", state)
+        _workspace.begin_pending(slot)
+        try:
+            with _workspace.slot_view("pending"):
+                response = _legacy_go(slot, actions)
+                if (response.get("错误") or response.get("界面") == "message-ui"
+                        or any(not item.get("ok") for item in response.get("结算", []))):
+                    _workspace.abort_pending(slot)
+                    return response
+                _workspace.publish_pending(slot, response)
+                return response
+        except BaseException:
+            _workspace.abort_pending(slot)
+            raise
+
+
+def go(slot, actions=None):
+    """普通回合只写待提交代；存档管理在独立目标锁下运行。"""
+    if _is_delete_only(actions):
+        return _management_delete(slot, actions)
+    if _is_restore_only(actions) and sm._slot_writable(slot):
+        return _management_restore(slot, actions)
+    policy = _go_slot_policy(slot, actions)
+    if policy == _SLOT_POLICY_LOBBY or (policy == _SLOT_POLICY_CLAIM and not sm._slot_writable(slot)):
+        return _legacy_go(slot, actions)
+    if not _claim_batch_valid(actions):
+        return _legacy_go(slot, actions)
+    with _workspace.slot_lock(slot):
+        if policy == _SLOT_POLICY_EXISTING and _is_turn_read_only(actions):
+            pending = _workspace.pending_exists(slot)
+            if pending and not _workspace.active_exists(slot):
+                with _workspace.slot_view("pending"):
+                    stage = _turn_state.read_state(slot)["state"]
+                return _turn_error(slot, "slot_unpublished", "角色尚未完成开场结算",
+                                   stage)
+            with _workspace.slot_view("active"):
+                result = _legacy_go(slot, actions)
+            if pending:
+                with _workspace.slot_view("pending"):
+                    return _with_turn_state(result, _turn_state.read_state(slot)["state"])
+            return result
+        with _workspace.slot_view("active"):
+            if policy == _SLOT_POLICY_EXISTING:
+                if not os.path.isdir(_workspace.physical_slot_path(slot)):
+                    return _turn_error(slot, "slot_missing", "槽位不存在，请先创建角色",
+                                       _turn_state.READY)
+                if _workspace.pending_exists(slot):
+                    with _workspace.slot_view("pending"):
+                        stage = _turn_state.read_state(slot)["state"]
+                    return _turn_error(slot, "go_already_staged",
+                                       "本轮 go 已暂存，请继续完成当前回合",
+                                       stage)
+                state = _turn_state.read_state(slot)["state"]
+                if state != _turn_state.READY:
+                    return _legacy_go(slot, actions)
+            if _is_restore_only(actions) or _is_delete_only(actions):
+                return _legacy_go(slot, actions)
+            if _action_list(actions) and all(
+                    a.get("类型") in _BATTLE_GO_ACTIONS for a in _action_list(actions)
+                    if isinstance(a, dict)):
+                return _legacy_go(slot, actions)
+        if policy == _SLOT_POLICY_EXISTING:
+            _workspace.begin_pending(slot)
+        else:
+            try:
+                _workspace.begin_new_pending(slot)
+            except FileExistsError:
+                candidate = sm.next_slot_number()
+                return {"槽位": slot, "错误码": "slot_occupied",
+                        "next_slot": candidate,
+                        "错误": f"槽位 {slot} 已被占用，最新可用槽位为 {candidate}",
+                        "turn_state": _turn_state.READY}
+        try:
+            with _workspace.slot_view("pending"):
+                result = _settle_go(slot, actions)
+                if (result.get("错误") or result.get("界面") == "message-ui"
+                        or any(not item.get("ok") for item in result.get("结算", []))):
+                    _workspace.abort_pending(slot)
+                    return _with_turn_state(result, _turn_state.READY)
+                state_slot = result.get("槽位", slot)
+                if result.get("界面") is not None:
+                    _turn_state.reset_state(state_slot)
+                    response = _with_turn_state(result, _turn_state.READY)
+                    _workspace.publish_pending(state_slot, response)
+                    return response
+                _turn_state.write_state(state_slot, _turn_state.AWAITING_PLOT,
+                                        origin=_turn_origin(actions))
+                return _with_turn_state(result, _turn_state.AWAITING_PLOT)
+        except BaseException:
+            # 创建失败也须释放未发布代；普通槽位保留旧正式状态。
+            _workspace.abort_pending(slot)
+            raise
+
+
+def plot_writing(slot, payload=None):
+    """校验并保存剧情与拟议变更；不会把拟议变更写入待提交代。"""
+    payload = {} if payload is None else payload
+    if not sm._slot_writable(slot) or not isinstance(payload, dict):
+        return {"错误": "plot-writing 须提供正式槽位及 JSON 对象"}
+    with _workspace.slot_lock(slot):
+        if not _workspace.pending_exists(slot):
+            with _workspace.slot_view("active"):
+                return _turn_error(slot, "plot_not_expected", "当前没有待拟剧情的 go",
+                                   _turn_state.read_state(slot)["state"])
+        return _plot_writing_pending(slot, payload)
+
+
+def _plot_writing_pending(slot, payload):
+    with _workspace.slot_view("pending"):
+        _set_slot(slot)
+        state = _turn_state.read_state(slot)["state"]
+        if state == _turn_state.AWAITING_JUDGE:
+            return _turn_error(
+                slot,
+                "plot_already_completed",
+                "本轮 plot-writing 已通过校验，不得再次修改",
+                state,
+            )
+        if state != _turn_state.AWAITING_PLOT:
+            return _turn_error(slot, "plot_not_expected", "当前没有待拟剧情的 go", state)
+        extra = set(payload) - {"槽位", "行为", "当前剧情", "经历概括", "场景要素", "提及地点"}
+        if extra:
+            return _plot_error(slot, f"plot-writing 非预期字段：{'、'.join(sorted(extra))}", state)
+        plot = payload.get("当前剧情")
+        elements = _norm_elements(payload.get("场景要素"))
+        if not isinstance(plot, str) or not plot.strip():
+            return _plot_error(slot, "plot-writing 须提供非空 当前剧情", state)
+        if not elements:
+            return _plot_error(slot, "plot-writing 须提供非空 场景要素数组", state)
+        if any(len(e.get("描写") or "") > _SCENE_ELEMENT_DESCRIPTION_LIMIT for e in elements):
+            return _plot_error(slot, "场景要素描写不得超过30字", state)
+        if not isinstance(payload.get("提及地点"), list):
+            return _plot_error(slot, "plot-writing 须提供 提及地点 数组", state)
+        if payload.get("经历概括") is not None and (
+                not isinstance(payload["经历概括"], str) or not payload["经历概括"].strip()):
+            return _plot_error(slot, "经历概括须为非空字符串", state)
+        if (_turn_state.read_state(slot).get("origin") == "创建角色"
+                and not _contains_opening_template(payload)):
+            return _plot_error(slot, "新档开场剧情须包含固定时代背景：\n" + OPENING_ERA_TEMPLATE, state)
+        missing = _missing_check_hints(slot, plot)
+        if missing:
+            return _plot_error(slot, f"判定提示未带入剧情：{missing}", state)
+        actions = payload.get("行为", [])
+        if not isinstance(actions, list) or any(not isinstance(a, dict) for a in actions):
+            return _plot_error(slot, "行为须为状态变更对象数组", state)
+        if any(a.get("类型") in {"战斗-开始", "战斗-推进"} for a in actions):
+            return _plot_error(slot, "战斗开始/推进须经专用战斗结算调用", state)
+        if any(a.get("类型") in {"登记场景", "隔离地点"} for a in actions):
+            return _plot_error(slot, "场景登记/隔离须先执行 scene-prepare", state)
+        adoptions = {"场景-采用草稿", "线索-采用草稿"}
+        if any(a.get("类型") in adoptions for a in actions):
+            return _plot_error(slot, "场景与任务草稿由 judge 自动采用，不得在 plot-writing 中指定", state)
+        dead_hits = _dead_element_hits(elements)
+        if dead_hits:
+            detail = "；".join(f"【{sub}】命中死亡角色【{name}】" for sub, name in dead_hits)
+            return _plot_error(
+                slot,
+                f"死亡角色不得申报为场景要素主体：{detail}——"
+                "死亡角色不得正面登场；若为尸体/遗物/旧地等，"
+                "请改用「角色名+的+…」主体表述、名称写入描写",
+                state,
+            )
+        player_hits = _player_element_hits(slot, elements, actions)
+        if player_hits:
+            detail = "；".join(f"【{sub}】" for sub in player_hits)
+            return _plot_error(
+                slot,
+                f"玩家主控不得申报为场景要素主体：{detail}——"
+                "主控状态由队伍面板承载，请勿重复申报；"
+                "若指随身物件，请改用「角色名+的+…」主体表述",
+                state,
+            )
+        with SettlementSession(slot, copy.deepcopy(sm.read_explore(slot) or {}),
+                               build_mutation_executor(), "judge",
+                               build_quest_trigger_registry()) as session:
+            results = _apply_changes(slot, session.explore,
+                                     [a for a in actions
+                                      if a.get("类型") != "战斗-触发"
+                                      and not _is_deferred_arrival(slot, a)])
+            if not all(r.get("ok") for r in results):
+                return _plot_error(slot, "剧情状态变更预校验失败：" + "；".join(
+                    str(r.get("msg")) for r in results if not r.get("ok")), state)
+            # 特殊指令红线按剧情落定后的位置核对；延迟抵达（目标场景待本轮
+            # scene-prepare 登记）不写入预校验副本，须取行为中最后的玩家抵达目的地。
+            position = session.explore.get("当前位置") or ""
+            for action in actions:
+                if action.get("类型") == "抵达" and not action.get("角色"):
+                    destination = action.get("位置") or action.get("目的地")
+                    if isinstance(destination, str) and "·" in destination:
+                        position = destination
+            command_error = _scene_element_command_error(
+                slot, {"当前位置": position}, elements)
+            if command_error:
+                return _plot_error(slot, command_error, state)
+        _plot_drafts.write_draft(slot, sm.read_round(slot),
+                                 {k: copy.deepcopy(v) for k, v in payload.items() if k != "槽位"})
+        _turn_state.write_state(slot, _turn_state.AWAITING_JUDGE,
+                                origin=_turn_state.read_state(slot)["origin"])
+        return {"ok": True, "槽位": slot, "turn_state": _turn_state.AWAITING_JUDGE}
+
+
+def turn_reset(slot):
+    """只放弃尚未发布的回合，已提交响应和正式状态均不变。"""
+    if not sm._slot_writable(slot):
+        return {"错误": "turn-reset 须提供正式槽位"}
+    with _workspace.slot_lock(slot), _workspace.slot_view("active"):
+        if not _workspace.pending_exists(slot):
+            return _turn_error(slot, "no_pending_turn", "没有可放弃的暂存回合",
+                               _turn_state.read_state(slot)["state"])
+        _workspace.abort_pending(slot)
+        return {"ok": True, "槽位": slot, "turn_state": _turn_state.read_state(slot)["state"]}
+
+
+def judge(slot, payload=None):
+    """普通结算采用剧情草稿，在试运行代内完成后一次发布。"""
+    payload = {} if payload is None else payload
+    if not sm._slot_writable(slot) or not isinstance(payload, dict):
+        return {"错误": "judge 须提供正式槽位及 JSON 对象"}
+    with _workspace.slot_lock(slot):
+        if not _workspace.pending_exists(slot):
+            with _workspace.slot_view("active"):
+                state = _turn_state.read_state(slot)["state"]
+                if state in {_turn_state.READY, _turn_state.AWAITING_BATTLE_START} and set(payload) <= {"槽位"}:
+                    response = _workspace.read_committed_response(slot)
+                    if response is not None:
+                        return response
+                return _legacy_judge(slot, payload)
+        with _workspace.slot_view("pending"):
+            state = _turn_state.read_state(slot)["state"]
+            if state != _turn_state.AWAITING_JUDGE:
+                return _turn_error(slot, "judge_not_expected", "须先完成 plot-writing", state)
+            if set(payload) - {"槽位"}:
+                return _plot_error(slot, "普通回合 judge 只需传入 槽位；已通过阶段不得修改", state)
+            try:
+                draft = _plot_drafts.read_draft(slot)
+                scene = _scene_drafts.read_draft(slot)
+                quests = _quest_drafts.read_drafts(slot)
+            except JsonReadError as exc:
+                return _plot_error(
+                    slot,
+                    f"本轮草稿读取失败，请联系宿主恢复当前回合（{exc.detail}）",
+                    state,
+                )
+            if draft is None or draft["round"] != sm.read_round(slot):
+                return _plot_error(slot, "剧情草稿不存在或轮次不匹配，请联系宿主恢复当前回合", state)
+            proposal = copy.deepcopy(draft["payload"])
+            adoptions = {"场景-采用草稿", "线索-采用草稿"}
+            prepared = []
+            if scene.get("operations"):
+                prepared.append({"类型": "场景-采用草稿"})
+            if quests.get("order"):
+                prepared.append({"类型": "线索-采用草稿",
+                                 "名称列表": list(quests["order"])})
+            actions = [a for a in proposal.setdefault("行为", [])
+                       if a.get("类型") not in adoptions]
+            proposal["行为"] = prepared + actions
+        with _workspace.pending_trial(slot) as trial:
+            with _workspace.slot_view("pending"):
+                result = _legacy_judge(slot, {"槽位": slot, **proposal})
+                if result.get("错误"):
+                    return result
+                _plot_drafts.clear_draft(slot)
+                trial.commit()
+                _workspace.publish_pending(slot, result)
+                return result
+
+
+def _pending_operation(handler):
+    """阶段工具在跨进程锁下读写同一个未发布代。"""
+    def wrapped(payload=None):
+        slot = payload.get("槽位") if isinstance(payload, dict) else None
+        if not sm._slot_writable(slot):
+            return handler(payload)
+        with _workspace.slot_lock(slot):
+            with _workspace.slot_view("pending" if _workspace.pending_exists(slot) else "active"):
+                return handler(payload)
+    return wrapped
+
+
+@_pending_operation
 def check(payload=None):
     """属性/技艺判定；有效结果写入当前轮判定留痕。"""
     payload = {} if payload is None else payload
@@ -1017,11 +1346,11 @@ def check(payload=None):
         return {"错误": "check 缺少 槽位"}
     if sm._slot_writable(slot):
         state = _turn_state.read_state(slot)["state"]
-        if state != _turn_state.AWAITING_JUDGE:
+        if state != _turn_state.AWAITING_PLOT:
             return _turn_error(
                 slot,
                 "check_not_expected",
-                "check 只允许在 go 已完成、等待 judge 时调用",
+                "check 只允许在 go 已完成、等待剧情时调用",
                 state,
             )
     else:
@@ -1035,8 +1364,38 @@ def check(payload=None):
         attrs = [a.strip() for a in attrs.split(",") if a.strip()]
     if isinstance(judge_names, str):
         judge_names = [n.strip() for n in judge_names.split(",") if n.strip()]
+    cache_path = None
+    cache_key = json.dumps([attrs, judge_names, opponent, base_rate],
+                           ensure_ascii=False, sort_keys=True)
+    if state == _turn_state.AWAITING_PLOT:
+        cache_path = os.path.join(sm.slot_path(slot), ".runtime", "check_results.json")
+        try:
+            cache = read_json(cache_path, expected_type=dict)
+        except JsonMissingError:
+            cache = {}
+        if cache_key in cache:
+            cached = cache[cache_key]
+            try:
+                logs = read_json(_check_log.check_log_path(slot), expected_type=list)
+            except JsonMissingError:
+                logs = []
+            except JsonReadError as exc:
+                warn_json_read(exc)
+                logs = []
+            rnd = sm.read_round(slot)
+            if not any(isinstance(rec, dict) and rec.get("轮次") == rnd
+                       and rec.get("属性") == attrs and rec.get("判定角色") == judge_names
+                       and rec.get("对抗") == opponent and rec.get("基础成功率") == base_rate
+                       and rec.get("结果") == cached.get("结果") for rec in logs):
+                _append_check(slot, {"轮次": rnd, "属性": attrs, "判定角色": judge_names,
+                                     "对抗": opponent, "基础成功率": base_rate,
+                                     "结果": cached.get("结果"), "提示": cached.get("提示", "")})
+            return _with_turn_state(cached, state)
     result = _check.run_check(attrs, judge_names, opponent, base_rate)
     if "结果" in result:
+        if cache_path:
+            cache[cache_key] = copy.deepcopy(result)
+            atomic_write_json(cache_path, cache, indent=2)
         rnd = sm.read_round(slot)
         _append_check(slot, {
             "轮次": rnd,
@@ -1050,6 +1409,7 @@ def check(payload=None):
     return _with_turn_state(result, state) if state else result
 
 
+@_pending_operation
 def random_event(payload=None):
     """随机事件判定；切换槽位但不写判定留痕。"""
     payload = {} if payload is None else payload
@@ -1060,22 +1420,37 @@ def random_event(payload=None):
         return {"错误": "random-event 缺少 槽位"}
     if sm._slot_writable(slot):
         state = _turn_state.read_state(slot)["state"]
-        if state != _turn_state.AWAITING_JUDGE:
+        if state != _turn_state.AWAITING_PLOT:
             return _turn_error(
                 slot,
                 "random_event_not_expected",
-                "random-event 只允许在 go 已完成、等待 judge 时调用",
+                "random-event 只允许在 go 已完成、等待剧情时调用",
                 state,
             )
     else:
         state = None
     _dq.set_slot(slot)
+    if state == _turn_state.AWAITING_PLOT:
+        path = os.path.join(sm.slot_path(slot), ".runtime", "random_event.json")
+        try:
+            recorded = read_json(path, expected_type=dict)
+        except JsonMissingError:
+            recorded = None
+        if recorded is not None:
+            if recorded.get("基础成功率") != payload.get("基础成功率", 15):
+                return _turn_error(slot, "random_event_already_rolled",
+                                   "本轮已掷随机事件，修改剧情不得重掷", state)
+            return _with_turn_state(recorded["结果"], state)
     result = _check.run_random_event(payload.get("基础成功率", 15))
+    if state == _turn_state.AWAITING_PLOT and "结果" in result:
+        atomic_write_json(path, {"基础成功率": payload.get("基础成功率", 15),
+                                 "结果": result}, indent=2)
     return _with_turn_state(result, state) if state else result
 
 
+@_pending_operation
 def scene_prepare(payload=None):
-    """批量预校验场景登记/隔离/重连，并保存当前 round 最新草稿。"""
+    """批量预校验场景登记/隔离/重连，并一次性保存当前 round 草稿。"""
     payload = {} if payload is None else payload
     if not isinstance(payload, dict):
         return {"ok": False, "错误": "scene-prepare stdin 须为 JSON 对象"}
@@ -1094,6 +1469,25 @@ def scene_prepare(payload=None):
         result["ok"] = False
         return result
 
+    round_number = sm.read_round(slot)
+    try:
+        scene_draft = _scene_drafts.read_draft(slot)
+    except JsonReadError as exc:
+        return _with_turn_state({
+            "ok": False,
+            "槽位": slot,
+            "错误": f"场景草稿读取失败，请联系宿主恢复当前回合（{exc.detail}）",
+        }, state)
+    if scene_draft.get("round") == round_number:
+        result = _turn_error(
+            slot,
+            "scene_prepare_already_completed",
+            "本轮 scene-prepare 已通过校验，不得再次修改",
+            state,
+        )
+        result["ok"] = False
+        return result
+
     extra = set(payload) - {"槽位", "场景"}
     if extra:
         return _with_turn_state({
@@ -1106,10 +1500,10 @@ def scene_prepare(payload=None):
             "ok": False, "槽位": slot, "错误": "scene-prepare 场景 须为数组",
         }, state)
 
-    round_number = sm.read_round(slot)
     if not items:
-        _scene_drafts.write_batch(slot, round_number, [])
-        return _with_turn_state({"ok": True, "槽位": slot, "场景": [], "已清除": True}, state)
+        return _with_turn_state({
+            "ok": False, "槽位": slot, "错误": "scene-prepare 场景 须为非空数组",
+        }, state)
 
     normalized = []
     summaries = []
@@ -1201,14 +1595,16 @@ def _quest_definition_summary(definition):
     }
 
 
+@_pending_operation
 def quest_prepare(payload=None):
-    """批量预校验即兴任务蓝图，并以线索名称保存当前 round 最新草稿批次。"""
+    """批量预校验即兴任务蓝图，并一次性保存当前 round 草稿批次。"""
     payload = {} if payload is None else payload
     if not isinstance(payload, dict):
         return {"ok": False, "错误": "quest-prepare stdin 须为 JSON 对象"}
     slot = payload.get("槽位")
     if not isinstance(slot, int) or isinstance(slot, bool) or slot <= 0:
         return {"ok": False, "错误": "quest-prepare 缺少有效正式 槽位"}
+    _set_slot(slot)
     turn = _turn_state.read_state(slot)
     state = turn["state"]
     if state != _turn_state.AWAITING_JUDGE:
@@ -1216,6 +1612,25 @@ def quest_prepare(payload=None):
             slot,
             "quest_prepare_not_expected",
             "quest-prepare 只允许在 go 已完成、等待 judge 时调用",
+            state,
+        )
+        result["ok"] = False
+        return result
+
+    round_number = sm.read_round(slot)
+    try:
+        quest_drafts = _quest_drafts.read_drafts(slot)
+    except JsonReadError as exc:
+        return _with_turn_state({
+            "ok": False,
+            "槽位": slot,
+            "错误": f"任务草稿读取失败，请联系宿主恢复当前回合（{exc.detail}）",
+        }, state)
+    if quest_drafts.get("round") == round_number:
+        result = _turn_error(
+            slot,
+            "quest_prepare_already_completed",
+            "本轮 quest-prepare 已通过校验，不得再次修改",
             state,
         )
         result["ok"] = False
@@ -1239,6 +1654,38 @@ def quest_prepare(payload=None):
     world_facts = normalize_world_facts(copy.deepcopy(sm.read_world_facts(slot)))
     quest_state = normalize_quest_state(copy.deepcopy(sm.read_quest_state(slot)))
     import_legacy_quests(sm.read_explore(slot) or {}, quest_state)
+    try:
+        proposal = _plot_drafts.read_draft(slot)
+    except JsonReadError as exc:
+        return _with_turn_state({
+            "ok": False,
+            "槽位": slot,
+            "错误": f"剧情草稿读取失败，请联系宿主恢复当前回合（{exc.detail}）",
+        }, state)
+    if proposal is None or proposal["round"] != sm.read_round(slot):
+        return _with_turn_state({"ok": False, "槽位": slot,
+                                 "错误": "剧情草稿不存在或轮次不匹配"}, state)
+    with SettlementSession(slot, copy.deepcopy(sm.read_explore(slot) or {}),
+                           build_mutation_executor(), "judge",
+                           build_quest_trigger_registry()) as session:
+        changes = [a for a in proposal["payload"].get("行为", [])
+                   if a.get("类型") not in {"场景-采用草稿", "线索-采用草稿", "战斗-触发"}]
+        try:
+            scene = _scene_drafts.read_draft(slot)
+        except JsonReadError as exc:
+            return _with_turn_state({
+                "ok": False,
+                "槽位": slot,
+                "错误": f"场景草稿读取失败，请联系宿主恢复当前回合（{exc.detail}）",
+            }, state)
+        if scene.get("operations"):
+            changes.insert(0, {"类型": "场景-采用草稿"})
+        simulated = _apply_changes(slot, session.explore, changes)
+        if not all(r.get("ok") for r in simulated):
+            return _with_turn_state({"ok": False, "槽位": slot,
+                                     "错误": "剧情变更投影失败，无法准备任务草稿"}, state)
+        world_facts = copy.deepcopy(session.world_facts)
+        quest_state = copy.deepcopy(session.quest_state)
     records = []
     prepared = []
     seen_names = set()
@@ -1347,7 +1794,6 @@ def quest_prepare(payload=None):
             **summary,
         })
 
-    round_number = sm.read_round(slot)
     _quest_drafts.write_batch(slot, round_number, records)
     return {
         "ok": True,
@@ -1369,8 +1815,8 @@ def _prepare_query(payload, command, allowed):
         return {"错误": f"{command} 缺少有效 槽位（未建档时传 0）"}
     try:
         _dq.set_slot(slot)
-    except (TypeError, ValueError) as exc:
-        return {"错误": f"{command} 槽位无效：{exc}"}
+    except (TypeError, ValueError, _workspace.PendingWorkspaceError) as exc:
+        return {"错误": f"{command} 槽位无效或尚未发布：{exc}"}
     return None
 
 
@@ -1471,6 +1917,22 @@ def _cli(argv):
         result = go(slot, actions)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+    if cmd in ("plot-writing", "turn-reset"):
+        try:
+            payload = json.loads(sys.stdin.read())
+        except json.JSONDecodeError as exc:
+            print(json.dumps({"错误": f"{cmd}: JSON 解析失败（{exc}）"}, ensure_ascii=False))
+            return 2
+        if not isinstance(payload, dict) or not sm._slot_writable(payload.get("槽位")):
+            print(json.dumps({"错误": f"{cmd} 须传正式 槽位"}, ensure_ascii=False))
+            return 2
+        if cmd == "turn-reset" and set(payload) != {"槽位"}:
+            print(json.dumps({"错误": "turn-reset 仅允许 槽位"}, ensure_ascii=False))
+            return 2
+        result = (plot_writing(payload["槽位"], payload) if cmd == "plot-writing"
+                  else turn_reset(payload["槽位"]))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 2 if result.get("错误") else 0
     if cmd == "check":
         # engine check（stdin 传 JSON：{"槽位": N, "属性":[...], "判定角色":[...],
         # "对抗":"角色名|@数值", "基础成功率": N}）
@@ -1541,7 +2003,7 @@ def _cli(argv):
         result = judge(slot, payload)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    print("未知命令: " + cmd + "\n可用: go / judge / check / random-event / scene-prepare / quest-prepare / query / setting / recommend / map-query", file=sys.stderr)
+    print("未知命令: " + cmd + "\n可用: go / plot-writing / judge / turn-reset / check / random-event / scene-prepare / quest-prepare / query / setting / recommend / map-query", file=sys.stderr)
     return 2
 
 

@@ -14,7 +14,7 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
 | [wuxia-rpg-worldview.md](./references/wuxia-rpg-worldview.md) | 世界观、地区与势力分布 | **必读** |
 | [wuxia-rpg-roster.md](./references/wuxia-rpg-roster.md) | 预设人物名册（按阵营；含人设与关联人物） | 涉入或引用人物时 |
 | [wuxia-rpg-exploration-rules.md](./references/wuxia-rpg-exploration-rules.md) | 推演框架与 GM 行为准则；战斗/场景/NPC/线索/判定/随机事件等分册按需读 | **必读** |
-| [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) | go 行为、配置、战斗与 judge 状态变更参数 | 组装 `行为` 数组或落盘状态变更时 |
+| [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) | go 行为、配置、战斗与 plot-writing 状态变更参数 | 组装 `行为` 数组或拟议状态变更时 |
 | [wuxia-rpg-data-schema.md](./references/wuxia-rpg-data-schema.md) | 角色、武学、物品、状态、阵营字段 | 创建角色、写临时 NPC 或查字段时 |
 | [wuxia-rpg-ming-customs.md](./references/wuxia-rpg-ming-customs.md) | 明中晚期衣食住行与社会风俗 | 描写市井、器物、名物与风土时 |
 | [wuxia-rpg-dao-query.md](./references/wuxia-rpg-dao-query.md) | 数据、地图与判定接口 | 核实设定、属性、场景或执行判定时 |
@@ -40,23 +40,20 @@ description: 武侠RPG。触发条件：用户表达武侠RPG相关意图（"开
 
 ---
 
-## 基本循环（go / judge）
+## 基本循环（go / plot-writing / judge）
 
-每轮依次执行：
+普通大世界叙事每轮依次执行：
 
-1. **分析与可执行性预检**：识别玩家行动，按需读取规则与设定，并依据已确定的剧情约束判断能否执行；只提交可执行 action，若全部受阻则向 go 传空 `行为` 数组。
-2. **go 机制结算**：调 engine go（方式见下「engine 调用」），读取返回的 `界面`：
-   - 有 `界面`：按「界面渲染」输出（见下）。
-   - 无 `界面`：基于 go 的真实结果推演剧情，再进入 judge。
-3. **推演与草稿准备**：完整读取 `wuxia-rpg-exploration-rules.md`，先完成必要的 check / random-event；有地图变化时用一次 `scene-prepare` 批量准备，有即兴线索变化时用一次 `quest-prepare` 批量准备。
-4. **judge 剧情落盘**：按 `wuxia-rpg-game-spec.md` 自检，以 `场景-采用草稿` 采用整批地图规划，以 `线索-采用草稿` 的 `名称列表` 采用所需任务，再提交剧情、场景要素、事实及其他状态变更。
-5. **渲染**：按「界面渲染」原样输出 engine 返回。
+1. **预检与 go**：识别玩家行动及已确定的剧情约束；只提交可执行 action，全部受阻则传空 `行为` 数组。go 有 `界面` 就直接渲染；无 `界面` 时结果尚未落定，不向玩家输出。
+2. **推演与 plot-writing**：完整读取 `wuxia-rpg-exploration-rules.md`，按需完成 check / random-event；据结果一次性提交剧情、场景要素、提及地点、经历概括及一般状态变更。校验成功后本轮不得修改。
+3. **准备草稿**：需要改地图时调用一次 `scene-prepare`，需要新建/扩展线索时调用一次 `quest-prepare`，建议先场景后线索；各自校验成功后不得覆盖。
+4. **judge 与渲染**：只传 `槽位` 调 judge；judge 自动采用本轮全部场景与任务草稿，成功后按「界面渲染」输出。
 
 ```text
-玩家输入 → 剧情可执行性预检 → go → 有界面则渲染；无界面则判定/推演 → 必要时 scene-prepare / quest-prepare → judge → 渲染 → 等待输入
+玩家输入 → 预检 → go → 有界面直接渲染；无界面则按需 check/random-event → plot-writing（一次）→ 按需 scene-prepare/quest-prepare（各一次）→ judge(槽位，自动采用全部草稿) → 渲染
 ```
 
-**全程静默**：go、必要的判定、judge 与自检完成前，不输出说明、草稿或思考过程。完整强制检查见 [wuxia-rpg-game-spec.md](./references/wuxia-rpg-game-spec.md)。
+plot-writing、prepare 或 judge 报错只修正对应阶段，不重跑 go。即时界面、管理操作及战斗遵循各自流程。**全程静默**：judge 成功和自检完成前，不输出说明、草稿或思考过程。完整检查见 [wuxia-rpg-game-spec.md](./references/wuxia-rpg-game-spec.md)。
 
 ---
 
@@ -72,7 +69,7 @@ GM 从自然语言提取地点、目标、角色、物品、武学、数量等�
 | 吃食物、研读秘籍/技艺书、使用物品 | `使用物品`，只传物品与目标，由 engine 分流 |
 | 查看背包、武学、地图、线索、角色信息 | 对应查询 action |
 | 购买、出售 | `购买` / `出售`；店主货架为商人，私下转手为个人 |
-| 打、攻击、挑战 | `攻击`；GM 据场景决定是否触战。触战时 judge `战斗-触发`，玩家选操控方式后再 judge `战斗-开始` |
+| 打、攻击、挑战 | `攻击`；触战时在 plot-writing 行为中提交 `战斗-触发`，玩家选操控方式后再由 judge `战斗-开始` |
 | 配置装备、武学、战斗物品，精进武学 | 对应配置/精进 action |
 | 标题页创建、读档、返回或创建步骤 | `标题-操作`；参数见 title-ui 文档，最终建号用`创建角色` |
 | 保存、读档、删除、查看存档 | 对应存档 action；删除前须确认 |
@@ -95,7 +92,8 @@ engine 统一提供结算、判定与查询接口。有对应 `wuxia_*` 工具�
 | 工具 | 主要参数 | bash 回退命令 |
 |---|---|---|
 | `wuxia_go` | `槽位`、`行为` | `engine.py go` |
-| `wuxia_judge` | `槽位`、`行为`、顶层叙事字段 | `engine.py judge` |
+| `wuxia_plot_writing` | `槽位`、`行为`、顶层叙事字段 | `engine.py plot-writing` |
+| `wuxia_judge` | `槽位` | `engine.py judge` |
 | `wuxia_check` | `槽位`、`属性`、`判定角色`、`对抗`、`基础成功率` | `engine.py check` |
 | `wuxia_random_event` | `槽位`、`基础成功率` | `engine.py random-event` |
 | `wuxia_scene_prepare` | `槽位`、`场景`批次数组 | `engine.py scene-prepare` |
@@ -108,28 +106,28 @@ engine 统一提供结算、判定与查询接口。有对应 `wuxia_*` 工具�
 bash 均从 stdin 读取 JSON，例如：
 ```bash
 echo '{"槽位":<slot>,"行为":[{...}]}' | python3 scripts/engine.py go
+echo '{"槽位":<slot>,"行为":[...],"当前剧情":"...","场景要素":[...],"提及地点":[]}' | python3 scripts/engine.py plot-writing
 echo '{"槽位":<slot>,"场景":[{"操作":"登记","区域":"苏州","场景":"废园"}]}' | python3 scripts/engine.py scene-prepare
 echo '{"槽位":<slot>,"任务":[{"操作":"创建","蓝图":{...}}]}' | python3 scripts/engine.py quest-prepare
-echo '{"槽位":<slot>,"行为":[...],"当前剧情":"...","场景要素":[...],"提及地点":[]}' | python3 scripts/engine.py judge
+echo '{"槽位":<slot>}' | python3 scripts/engine.py judge
 echo '{"槽位":<slot>,"类型":"角色","名称":["柳序"]}' | python3 scripts/engine.py query
 ```
 
 完整查询参数见 [wuxia-rpg-dao-query.md](./references/wuxia-rpg-dao-query.md)。
 
 - `槽位` 为存档编号。`开始游戏`传 `0`并返回 `next_slot`；`创建角色`必须使用该编号，冲突时按错误中的最新 `next_slot`重试。
-- go 只承载玩家主动指令。返回有 `界面` 时按「界面渲染」输出；无 `界面` 时才调 judge。
-- judge 承载 GM 推演结果：状态变更、战斗触发/开始/推进及顶层叙事字段；`当前剧情`必填，战斗推进轮可为空。地图变化须先 `scene-prepare`，judge 只传一次 `场景-采用草稿`，不得直接传 `登记场景`/`隔离地点`。`场景要素`非战斗 judge 必填非空（描述落定后的场景，无变化也须重报现状，战斗类豁免）。`提及地点`必填（可为空数组，不得缺省）：本轮叙事新提及、玩家可前往的「区域·场景」全名，未登记会被打回。`场景要素.特殊指令`仅限当前场景绑定的功能 NPC，且严格按驿站远行、客栈投宿、店铺购买/出售设置；普通 NPC、物件和环境要素不得携带。
+- go 只承载玩家主动指令。有 `界面` 时直接渲染；无 `界面` 时结算结果仅供推演，须继续 plot-writing → judge，不能当成已落定状态。
+- plot-writing 承载普通叙事的 GM 推演：一般状态变更及顶层 `当前剧情`、`场景要素`、`提及地点`、`经历概括`；当前剧情必填，场景要素须非空，提及地点必填但可为空。每轮只成功提交一次，不传草稿采用 action。战斗特殊路径遵循战斗文档。
+- 地图变化须先 `scene-prepare`，草稿由 judge 整批自动采用，不得在 plot-writing 中直接传场景变更。`提及地点`填本轮新提及且可前往的「区域·场景」全名。`场景要素`描述落定后的场景；`特殊指令`仅限当前场景绑定的功能 NPC，按其场景功能设置。
 - check 承载判定掷骰：剧情依赖角色技艺或一级属性高低时先调，据 `结果`（成功/失败）推演；掷骰留痕，judge 时核对是否已高亮带入剧情。`对抗` 为角色名或 `@数值`。
-- random-event 承载随机事件判定：移动等行动按 `基础成功率`（缺省15，可按天气/区域调整）判断是否触发；返回 触发/未触发，不落盘留痕。
-- scene-prepare 只准备地图草稿：`场景`数组可混合登记、隔离、重连，空数组清除草稿；后一次成功调用整体覆盖本轮旧批次。它不推进回合、不落正式地图；同轮 judge 用 `场景-采用草稿` 整批采用。
-- quest-prepare 只准备即兴线索蓝图：`任务`数组可混合创建与扩展；后一次成功调用整体覆盖本轮旧批次。它不推进回合、不落正式状态；同轮 judge 用 `线索-采用草稿` 的 `名称列表` 采用。
+- random-event 承载随机事件判定：移动等行动按 `基础成功率`（缺省15，可按天气/区域调整）判断是否触发；结果在本轮暂存，修剧情时不重掷。
+- scene-prepare 只准备非空地图草稿；quest-prepare 只准备即兴线索蓝图。两者各自首次成功后锁定，由同轮 judge 全部自动采用。
 - query 的 `类型:"场景角色"`：传 `位置`（区域·场景）返回该场景的功能NPC与在场预设角色。
-- judge 的 `抵达` 变更：用于 NPC 位置变化或玩家被动移动（被带走、被押送、被擒等）；传 `角色` 与 `位置`（区域·场景），若改的是主控则落盘玩家当前位置。玩家主动移动已由 go 的 `远行`/`抵达` 落盘，judge 勿重复。
+- plot-writing 的 `抵达` 变更：用于 NPC 位置变化或玩家被动移动（被带走、被押送、被擒等）；传 `角色` 与 `位置`（区域·场景）。玩家主动移动已由 go 的 `远行`/`抵达` 拟议，本轮勿重复。
 - engine go 在不返回界面（GM 下调 judge）时，会返回 `区域提示`（当前所在地区）与可登场预设角色 `区域人物`；设计移动或路线需要场景图时调用 `wuxia_map_query`（bash 回退 `engine.py map-query`）。
-- go 无界面后必须完成 judge；此阶段只可插入 check/random-event 或只读查询，不得再执行新 go。
-- 返回 `状态冲突: go_already_committed` 时沿用上一条 go 的返回继续 judge，不得重跑 go；scene-prepare、quest-prepare 或 judge 报错时只修正对应请求，绝不重跑 go。judge 失败后草稿仍可重用；judge 成功或读档后草稿失效。
+- 普通 go 无界面后只提交一次 plot-writing，再按需各调用一次 prepare，最后 judge；已通过校验的阶段不得修改。失败阶段可修正重试，无需重跑 go。
 - engine 若返回 GM 专用提示，须按其要求执行，但不得向玩家渲染。
-- 空 `行为` 数组、休息、徒步/舟车远行、交谈观察、搜查翻找、其他行为及战斗操控通常无 go 界面，须续调 judge；配置、查询、存档和子界面操作通常直接返回界面。
+- 空 `行为` 数组、休息、徒步/舟车远行、交谈观察、搜查翻找、其他行为通常无 go 界面，走普通叙事流程；战斗、配置、查询、存档和子界面按对应流程处理。
 - 不论 go 或 judge，只要 engine 返回 `界面`，即把游戏主导权交回玩家，等待其下一步输入；禁止自行替玩家做出下一步决策。
 
 行为参数、顶层叙事字段与状态变更格式以 [wuxia-rpg-actions.md](./references/wuxia-rpg-actions.md) 为唯一权威来源。

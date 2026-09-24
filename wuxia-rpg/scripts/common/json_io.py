@@ -78,6 +78,27 @@ def warn_json_read(error):
     _LOGGER.warning("JSON 读取降级 [%s] %s", error.code, error)
 
 
+def fsync_directory(path):
+    """持久化目录项变更（rename、mkdir、unlink）。"""
+    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_tree(root):
+    """发布代目录前，将全部文件和子目录自底向上同步落盘。"""
+    for directory, _subdirs, files in os.walk(root, topdown=False):
+        for name in files:
+            fd = os.open(os.path.join(directory, name), os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        fsync_directory(directory)
+
+
 def atomic_write_json(path, value, *, ensure_ascii=False, indent=None):
     """将 JSON 写入同目录临时文件，落盘后原子替换目标。"""
     target = os.path.abspath(os.fspath(path))
@@ -94,6 +115,7 @@ def atomic_write_json(path, value, *, ensure_ascii=False, indent=None):
             file.flush()
             os.fsync(file.fileno())
         os.replace(temporary, target)
+        fsync_directory(directory)
     finally:
         if fd is not None:
             os.close(fd)

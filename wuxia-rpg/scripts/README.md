@@ -45,8 +45,9 @@ python3 scripts/engine.py <command>
 
 | 命令 | 定位 | 主要输入 |
 |---|---|---|
-| `go` | 结算玩家主动行为 | `槽位`、`行为` |
-| `judge` | 写入 GM 推演后的剧情与状态变化 | `槽位`、`行为`、`当前剧情`、`场景要素`、`经历概括` |
+| `go` | 预结算玩家主动行为；普通无界面回合结果尚未提交 | `槽位`、`行为` |
+| `plot-writing` | 暂存普通叙事及一般状态变更 | `槽位`、`行为`、`当前剧情`、`场景要素`、`提及地点`、`经历概括` |
+| `judge` | 采用暂存剧情、草稿及 go 结果并统一提交 | `槽位` |
 | `check` | 执行属性或技艺判定 | `槽位`、`属性`、`判定角色`、`对抗`、`基础成功率` |
 | `random-event` | 判断随机事件是否触发 | `槽位`、`基础成功率` |
 | `scene-prepare` | 批量预校验场景登记、隔离或重连 | `槽位`、`场景`批次数组 |
@@ -71,12 +72,12 @@ python3 scripts/engine.py go <<'JSON'
 JSON
 ```
 
-`行为`可以是一个数组。一次调用中的行为作为同一批次校验和提交。
+`行为`可以是一个数组。普通无界面回合的 go 结果是暂定结算，直到 judge 成功才成为权威状态；有界面时按即时界面流程处理。
 
-### 示例：剧情裁定
+### 示例：普通叙事与裁定
 
 ```bash
-python3 scripts/engine.py judge <<'JSON'
+python3 scripts/engine.py plot-writing <<'JSON'
 {
   "槽位": 1,
   "行为": [],
@@ -87,18 +88,12 @@ python3 scripts/engine.py judge <<'JSON'
   "提及地点": []
 }
 JSON
+python3 scripts/engine.py judge <<'JSON'
+{"槽位":1}
+JSON
 ```
 
-`judge` 顶层只接受：
-
-- `槽位`
-- `行为`
-- `当前剧情`（必填，战斗推进轮可为空）
-- `场景要素`（非战斗 judge 必填非空，缺省或空数组被打回）
-- `提及地点`（必填，可为空数组）
-- `经历概括`
-
-角色、线索、时间、关系度等变化必须放入 `行为` 数组，不能自创顶层字段。
+普通 `plot-writing` 接受 `槽位`、`行为`、`当前剧情`（必填）、`场景要素`（必填非空）、`提及地点`（必填，可空）和可选 `经历概括`。角色、线索、时间、关系度等变化放入 `行为`。普通 `judge` 只接受 `槽位`，不重复接收剧情与行为；建号开场同样走此流程，战斗专用步骤另行处理。
 
 ### 示例：判定
 
@@ -124,7 +119,7 @@ python3 scripts/engine.py scene-prepare <<'JSON'
 JSON
 ```
 
-成功后，同轮 `judge` 以 `{"类型":"场景-采用草稿"}` 整批采用；传空 `场景` 数组可撤销草稿。prepare 不改正式地图或轮次。
+plot-writing 成功后可准备一次非空场景批次；校验成功即锁定，由同轮只传 `槽位` 的 judge 整批自动采用。prepare 不改正式地图或轮次。
 
 ### 示例：准备即兴任务
 
@@ -134,7 +129,7 @@ python3 scripts/engine.py quest-prepare <<'JSON'
 JSON
 ```
 
-成功返回任务摘要数组；同轮 `judge` 以 `{"类型":"线索-采用草稿","名称列表":["示例线索"]}` 采用。prepare 只做 dry-run 校验，不改正式任务、事实、奖励或轮次。
+plot-writing 成功后可准备一次线索批次；校验成功即锁定，由同轮只传 `槽位` 的 judge 按批次顺序全部采用。prepare 不改正式任务、事实、奖励或轮次。
 
 ### 示例：基础数据查询
 
@@ -151,88 +146,69 @@ python3 scripts/engine.py query <<'JSON'
 JSON
 ```
 
-## 3. `go` / `judge` 两阶段协议
-
-一个需要剧情推演的世界回合通常按以下顺序执行：
+## 3. 普通回合 `go` → `plot-writing` → `judge` 协议
 
 ```text
-玩家输入
-  → GM 拆分主动行为
-  → go 结算确定性成本与直接效果
-  → 必要时 check / random-event
-  → 如需地图变化则 scene-prepare
-  → 如需新建/扩展即兴任务则 quest-prepare
-  → GM 推演剧情
-  → judge 采用草稿并写入剧情结果与状态变化
-  → 渲染返回界面
+玩家输入 → go 暂定机制结果 → 可选 check / random-event → plot-writing（一次）
+         → 可选 scene-prepare / quest-prepare（各一次）→ judge(槽位，自动采用全部草稿) → 渲染
 ```
+
+有界面的即时操作直接渲染；管理与战斗特殊路径保持独立，不套用普通回合链路。
 
 ### 回合状态机
 
-正式槽位将状态持久化到 `.runtime/turn_state.json`；校验失败或被门禁拒绝时保持原状态。
+正式槽位将状态持久化到 `.runtime/turn_state.json`；校验失败或被门禁拒绝时停留在可修正的阶段。
 
 ```mermaid
 stateDiagram-v2
     [*] --> READY
 
     state "READY：等待玩家输入" as READY
-    state "AWAITING_JUDGE：go 已提交，等待裁定" as AWAITING_JUDGE
+    state "AWAITING_PLOT：等待剧情暂存" as AWAITING_PLOT
+    state "AWAITING_JUDGE：等待草稿与裁定" as AWAITING_JUDGE
     state "AWAITING_BATTLE_START：等待战前选择" as AWAITING_BATTLE_START
 
-    READY --> READY: go 返回界面
-    READY --> AWAITING_JUDGE: go 无界面且提交成功
-
-    AWAITING_JUDGE --> AWAITING_JUDGE: check / random-event / scene-prepare / quest-prepare / 只读查询
-    AWAITING_JUDGE --> AWAITING_JUDGE: 重复 go（返回 go_already_committed）
-    AWAITING_JUDGE --> READY: judge 成功（非 exploration-battle-ui）
-    AWAITING_JUDGE --> AWAITING_BATTLE_START: judge 返回 exploration-battle-ui
-
-    AWAITING_BATTLE_START --> READY: judge 战斗-开始成功
+    READY --> READY: go 返回即时界面
+    READY --> AWAITING_PLOT: 普通 go 无界面
+    AWAITING_PLOT --> AWAITING_PLOT: check / random-event / 只读查询
+    AWAITING_PLOT --> AWAITING_JUDGE: plot-writing 成功
+    AWAITING_JUDGE --> AWAITING_JUDGE: scene-prepare / quest-prepare（各至多成功一次）/ 只读查询
+    AWAITING_JUDGE --> READY: judge 成功（普通回合）
 ```
 
-读档成功会清理本轮短期状态并回到 `READY`；`slot=0` 门厅不持久化回合状态。
+plot-writing 与两个 prepare 各自首次成功后锁定；建议先准备场景再准备线索，所有草稿由 judge 自动采用。校验失败只修正当前阶段，不重跑 go；异常中断由宿主使用内部恢复能力处理。战斗触发、开始和推进及建号另有阶段与门禁；读档成功清理本轮短期状态，`slot=0` 门厅不持久化普通回合状态。
 
 ### `go`
 
 `go`只承载玩家主动行为，例如移动、休息、交易、使用物品、配置、查询、存档和战斗操作。
 
-- 确定性成本和直接效果在 `go` 内落盘；
-- 同批行为任一项失败时，该批 `go` 不提交；
+- 普通无界面行为的确定性成本和直接效果只写入待提交投影；同批失败不保留这些改动；
 - `go` 不推进世界交互轮次，也不触发自动存档；
-- 返回中存在 `界面` 时，调用方应直接渲染并停止，不再补调 `judge`；
-- 返回中没有 `界面` 时，通常表示仍需 GM 推演并调用 `judge`。
+- 返回 `界面` 时直接渲染，按界面专用流程提交；无 `界面` 时按需判定，再经 `plot-writing` 拟议剧情和状态变更。
 
 ### `judge`
 
-`judge`承载 GM 推演后的叙事和状态变化。
-
-- 同批状态变化先暂存在内存中；
-- 任一变化非法时，本次 `judge` 整体不提交；
-- 成功后统一写入角色、场景和探索状态；
-- 只有成功返回 `exploration-ui` 的 `judge` 才推进世界交互轮次；
-- 战斗触发、开始和推进可以成功结算，但不推进大世界轮次。
+普通叙事的 `judge` 只传槽位：按场景、任务、一般状态变更的顺序采用本轮全部草稿，一次发布整个回合；失败保留已锁定草稿。只有成功返回 `exploration-ui` 才推进交互轮次。战斗开始与推进走专用流程，不推进大世界轮次。
 
 ### 场景草稿与 `scene-prepare`
 
-`scene-prepare` 只允许在 `AWAITING_JUDGE` 调用。`场景`数组可批量登记、隔离或重连地点；全部成功后整体替换 `.runtime/scene_drafts.json`，空数组用于撤销。`judge` 以单个`场景-采用草稿`整批重新校验并提交；非空草稿未采用会被打回，`登记场景`/`隔离地点`仅为草稿内部操作，judge 不接受直接提交。prepare 失败不覆盖旧草稿，judge 失败保留草稿，judge 成功或读档后清理。
+`scene-prepare` 在 plot-writing 成功后按需调用。`场景`为非空数组，可批量登记、隔离或重连地点；首次成功后写入并锁定 `.runtime/scene_drafts.json`。`judge` 自动整批采用，不接收 GM 提交的 `场景-采用草稿`、`登记场景` 或 `隔离地点`。prepare 失败不写草稿，judge 失败保留草稿，judge 成功或读档后清理。
 
 ### 预设故事线与 `quest-prepare`
 
 新档会按文件名排序载入 `assets/data/quests/*.json`，一个文件对应一个任务，全部以隐藏线索创建。起始节点条件满足时只返回 GM 入口提示；GM 在剧情中实际呈现引子后再用 `线索-发现` 公开。预设目录不使用索引或子目录，任一文件无效都会使建档失败并清理半成品槽位。
 
-`quest-prepare` 只用于运行时即兴线索和已有任务扩展，并且只允许在 `AWAITING_JUDGE` 阶段调用。`任务`数组可混合创建和扩展，并在同一事实/任务副本上依次复用 `create_quest()` / `extend_quest()` 校验；全部成功后，以线索名称为键整体替换 `.runtime/quest_drafts.json` 的本轮批次。最终 `judge` 用 `线索-采用草稿.名称列表` 选择一个或多个任务，按 prepare 顺序重新校验并在当前 `SettlementSession` 中提交。prepare 失败不覆盖旧批次，judge 失败保留批次，judge 成功或读档后清理。
+`quest-prepare` 在 plot-writing 成功后按需准备运行时线索草稿，`任务`数组可批量创建、扩展、修改或关闭；首次成功后写入并锁定 `.runtime/quest_drafts.json` 的本轮批次。judge 按 `order` 自动采用全部任务。prepare 失败不写批次，judge 失败保留批次，judge 成功或读档后清理。
 
 ### 事务边界
 
-`go`和`judge`是两个独立事务。
+普通叙事回合的 `go`、判定、`plot-writing` 和准备步骤只修改待提交工作区；`judge` 在独立试算代完成结算后，原子切换活动存档代指针，一次发布整个回合。阶段校验失败可原地修正，成功后锁定；judge 失败保留全部草稿及已掷结果。异常放弃由宿主调用内部恢复能力。即时界面和战斗操作走各自的专用提交路径。
 
-如果 `go` 已成功、随后 `judge` 失败，引擎只回滚本次 `judge` 的暂存变化，不会撤销已经提交的 `go` 结果。调用方应修正 `judge` 请求并重试，而不是重复执行 `go`。
-
-两者内部共用 `SettlementSession` 和 `MutationExecutor`：状态修改先在暂存区应用，再根据实际 before/after 生成领域事件，并同步执行 trigger 产生的后续 mutation/event，归约稳定后统一提交。事件队列只存在于本次调用的内存中，不写入存档，也不用于 Event Sourcing。
+结算内部共用 `SettlementSession` 和 `MutationExecutor`：状态修改先在暂存区应用，再根据实际 before/after 生成领域事件，并同步执行 trigger 产生的后续 mutation/event，归约稳定后统一提交。事件队列只存在于本次调用的内存中，不写入存档，也不用于 Event Sourcing。
 
 线索公开 notice 只在提交成功后生成：首次公开为 `线索【名称】已发现`，后续有效进展、路径关闭或扩展为 `线索【名称】已更新`。同一结算内按任务去重，发现优先；完成摘要、关闭描述和奖励描述保留在 `任务摘要及进度` 投影中，内部事件与 GM 提示不混入玩家 notice。任务归约会按 `all/any` 传播阻断状态；无剩余路径时自动关闭线索。
 
-该机制保证普通校验或 trigger 失败时不提交暂存数据；多个 JSON 文件仍按既有顺序写入，不具备 WAL 级崩溃原子性。
+普通回合发布前的校验、trigger 或进程失败不会改变活动存档代；发布后可读取已保存的最终响应。
 
 ## 4. 返回数据与界面路由
 
@@ -258,7 +234,7 @@ stateDiagram-v2
 
 ```text
 scripts/
-├── engine.py                 # 统一 go/judge/check/scene-prepare/quest-prepare/query CLI 与库入口
+├── engine.py                 # go/plot-writing/prepare/judge/query 与内部恢复 CLI 入口
 ├── settle/                   # 大世界结算编排、事务、字段和 UI 数据
 ├── common/                   # DAO、判定、状态、特效加载、时间工具
 ├── world/                    # 场景、地图、角色、交易、配装、武学与事件

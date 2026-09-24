@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """共享 Engine Service HTTP 契约。"""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -74,10 +75,13 @@ class EngineServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(health["service"], "wuxia-rpg-engine")
         self.assertEqual(health["instance_id"], "python-service-test")
-        self.assertEqual(health["protocol_version"], "1.6")
+        self.assertEqual(health["protocol_version"], "1.9")
         status, manifest = self.request("GET", "/api/tools")
         self.assertEqual(status, 200)
-        self.assertEqual(len(manifest["tools"]), 10)
+        self.assertEqual(len(manifest["tools"]), 11)
+        operations = {tool["operation"] for tool in manifest["tools"]}
+        self.assertIn("plot-writing", operations)
+        self.assertNotIn("turn-reset", operations)
 
     def test_canonical_and_compatibility_routes_share_gateway(self):
         payload = {"槽位": 0, "类型": "状态", "名称": ["不存在"]}
@@ -87,7 +91,9 @@ class EngineServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(compatible, canonical)
 
-        scene_payload = {"槽位": 1, "场景": []}
+        scene_payload = {"槽位": 1, "场景": [
+            {"操作": "隔离", "区域": "苏州", "场景": "废园"},
+        ]}
         status, canonical = self.request(
             "POST", "/api/v1/operations/scene-prepare", scene_payload)
         self.assertEqual(status, 200)
@@ -103,15 +109,79 @@ class EngineServiceTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(compatible, canonical)
 
+        operation = "plot-writing"
+        payload = {"槽位": 0, "当前剧情": "剧情",
+                   "场景要素": [{}], "提及地点": []}
+        status, canonical = self.request(
+            "POST", f"/api/v1/operations/{operation}", payload)
+        self.assertEqual(status, 200)
+        status, compatible = self.request("POST", f"/api/{operation}", payload)
+        self.assertEqual(status, 200)
+        self.assertEqual(compatible, canonical)
+
+    def test_new_operation_input_errors_are_protocol_errors(self):
+        for operation, payload in (
+            ("plot-writing", {"槽位": 1, "场景要素": [{}], "提及地点": []}),
+            ("plot-writing", {"槽位": 1, "当前剧情": "剧情",
+                              "场景要素": [], "提及地点": []}),
+            ("scene-prepare", {"槽位": 1, "场景": []}),
+            ("judge", {"槽位": 1, "行为": {}}),
+        ):
+            with self.subTest(operation=operation, payload=payload):
+                status, body = self.request(
+                    "POST", f"/api/v1/operations/{operation}", payload)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["code"], "invalid_request")
+
     def test_unknown_operation_and_request_limit(self):
-        status, body = self.request("POST", "/api/v1/operations/shell", {"槽位": 0})
+        for operation in ("shell", "turn-reset"):
+            status, body = self.request(
+                "POST", f"/api/v1/operations/{operation}", {"槽位": 0})
+            self.assertEqual(status, 404)
+            self.assertEqual(body["code"], "unknown_operation")
+        status, body = self.request("POST", "/api/turn-reset", {"槽位": 0})
         self.assertEqual(status, 404)
-        self.assertEqual(body["code"], "unknown_operation")
+        self.assertEqual(body["code"], "not_found")
         status, body = self.request("POST", "/api/v1/operations/query", {
             "槽位": 0, "类型": "角色", "填充": "x" * 300,
         })
         self.assertEqual(status, 413)
         self.assertEqual(body["code"], "request_too_large")
+
+    def test_http_and_cli_go_share_cross_process_slot_lock(self):
+        if SCRIPTS not in sys.path:
+            sys.path.insert(0, SCRIPTS)
+        from store import save_manager as sm, turn_workspace as ws
+        from tests.test_slot_allocation import character
+
+        slot = 8
+        sm.create_slot(character("并发测试客"), slot, self.tmp.name)
+        payload = {"槽位": slot, "行为": [{"类型": "交谈观察", "目标": "周遭"}]}
+
+        def cli_go():
+            proc = subprocess.run(
+                [sys.executable, os.path.join(SCRIPTS, "engine.py"), "go"],
+                input=json.dumps(payload, ensure_ascii=False), capture_output=True,
+                text=True, timeout=30,
+                env={**os.environ, "WUXIA_RPG_SAVE_DIR": self.tmp.name})
+            self.assertIn(proc.returncode, (0, 2), proc.stderr)
+            return json.loads(proc.stdout)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            with ws.slot_lock(slot, self.tmp.name):
+                http = workers.submit(self.request, "POST", "/api/v1/operations/go", payload)
+                cli = workers.submit(cli_go)
+                self.assertFalse(http.done())
+                self.assertFalse(cli.done())
+            status, http_result = http.result(timeout=30)
+            cli_result = cli.result(timeout=30)
+        self.assertEqual(status, 200)
+        results = [http_result, cli_result]
+        self.assertEqual(sum(r.get("turn_state") == "AWAITING_PLOT" and "错误" not in r
+                             for r in results), 1, results)
+        self.assertEqual(sum(r.get("状态冲突") == "go_already_staged" for r in results), 1,
+                         results)
+        self.assertTrue(ws.pending_exists(slot, self.tmp.name))
 
     def test_json_read_error_keeps_category(self):
         slot = os.path.join(self.tmp.name, "slot_9")

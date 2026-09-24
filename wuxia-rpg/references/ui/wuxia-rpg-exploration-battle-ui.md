@@ -5,7 +5,7 @@ description: 战前界面：确认参战方并选择操控方式
 
 # exploration-battle-ui 界面交互
 
-judge `战斗-触发` 返回本界面，正文由 engine 直出 `渲染文本`（exploration-ui 抬头与叙事 + 战局双方 + 操控方式）。本界面只确认参战方与操控方式，不运行战斗。
+plot-writing 申报 `战斗-触发` 后，judge 返回本界面，正文由 engine 直出 `渲染文本`（exploration-ui 抬头与叙事 + 战局双方 + 操控方式）。本界面只确认参战方与操控方式，不运行战斗。
 
 ## 交互
 

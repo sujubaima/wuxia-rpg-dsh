@@ -28,6 +28,7 @@ except Exception as exc:  # noqa: BLE001
 
 
 _COMPAT_PATHS = {
+    "/api/plot-writing": "plot-writing",
     "/api/check": "check",
     "/api/random-event": "random-event",
     "/api/scene-prepare": "scene-prepare",

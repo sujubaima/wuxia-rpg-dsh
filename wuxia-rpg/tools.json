@@ -1,11 +1,11 @@
 {
-  "protocol_version": "1.6",
+  "protocol_version": "1.9",
   "tools": [
     {
       "name": "wuxia_go",
       "operation": "go",
       "title": "武侠 go",
-      "description": "武侠RPG 玩家主动指令的机制结算（go）。无界面成功后必须继续 judge；待 judge 时重复 go 会被阶段门禁拒绝。不增轮次、不自动存档。",
+      "description": "武侠RPG 玩家主动指令的机制结算（go）。普通回合无界面后按需 check/random-event，提交一次 plot-writing，再按需各调用一次 prepare，最后 judge。不重复 go。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -16,7 +16,7 @@
           },
           "行为": {
             "type": "array",
-            "description": "go 行为数组；所有行动均受已确定的剧情约束阻止时传空数组，随后继续 judge",
+            "description": "go 行为数组；所有行动均受已确定的剧情约束阻止时传空数组，随后继续 plot-writing → judge",
             "items": {
               "type": "object",
               "additionalProperties": true
@@ -69,7 +69,7 @@
       "name": "wuxia_judge",
       "operation": "judge",
       "title": "武侠 judge",
-      "description": "武侠RPG GM 推演后的裁定落盘（judge）。仅在 go 返回无界面后调用；失败时修正并重试 judge，不得重跑 go。仅 exploration-ui 推进轮次。arguments 必须是合法 JSON，字符串内不得出现未转义的半角双引号或裸换行。",
+      "description": "武侠RPG 裁定落盘（judge）。普通回合自动采用本轮全部场景与任务草稿，judge 只传槽位；战斗另走专用流程。失败不重跑 go。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -80,7 +80,7 @@
           },
           "行为": {
             "type": "array",
-            "description": "状态变更/战斗 action 数组",
+            "description": "仅战斗沿用的 action 数组；普通回合不得传",
             "items": {
               "type": "object",
               "additionalProperties": true
@@ -88,35 +88,10 @@
           },
           "当前剧情": {
             "type": "string",
-            "description": "本回合剧情（非战斗裁定必填）"
-          },
-          "场景要素": {
-            "type": "array",
-            "description": "本轮可见的人/物/环境要素，每项描写不超过30字；非战斗 judge 必填非空（无变化也须重报现状，战斗类 judge 豁免）",
-            "minItems": 1,
-            "items": {
-              "type": "object",
-              "additionalProperties": true
-            }
-          },
-          "提及地点": {
-            "type": "array",
-            "description": "本轮叙事新提及、玩家可前往的「区域·场景」全名（如 苏州·玄妙观；可为空数组，不得缺省）。正式地图或本轮已采用场景草稿中不存在时将被打回。",
-            "items": {
-              "type": "string"
-            }
-          },
-          "经历概括": {
-            "type": "string",
-            "description": "经历概括"
+            "description": "仅战斗裁定沿用的剧情"
           }
         },
-        "required": [
-          "槽位",
-          "行为",
-          "场景要素",
-          "提及地点"
-        ]
+        "required": ["槽位"]
       },
       "output_schema": {
         "type": "object",
@@ -148,10 +123,52 @@
       }
     },
     {
+      "name": "wuxia_plot_writing",
+      "operation": "plot-writing",
+      "title": "武侠 plot writing",
+      "description": "武侠RPG 普通回合剧情与状态变更。go 无界面、必要 check/random-event 后提交一次；通过校验后本轮不得修改，随后按需 prepare，最后只传槽位调 judge。",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "槽位": {"type": "integer", "description": "当前存档槽位号"},
+          "行为": {
+            "type": "array",
+            "description": "本轮状态变更 action 数组；无变更可省略",
+            "items": {"type": "object", "additionalProperties": true}
+          },
+          "当前剧情": {"type": "string", "description": "本回合剧情；必填"},
+          "场景要素": {
+            "type": "array",
+            "description": "本轮可见的人/物/环境要素；须非空，无变化也重报现状",
+            "minItems": 1,
+            "items": {"type": "object", "additionalProperties": true}
+          },
+          "经历概括": {"type": "string", "description": "经历概括"},
+          "提及地点": {
+            "type": "array",
+            "description": "本轮叙事新提及、玩家可前往的「区域·场景」全名；可为空数组",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["槽位", "当前剧情", "场景要素", "提及地点"]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "ok": {"type": "boolean"},
+          "错误": {"type": "string"},
+          "状态冲突": {"type": "string"},
+          "turn_state": {"type": "string"}
+        }
+      }
+    },
+    {
       "name": "wuxia_check",
       "operation": "check",
       "title": "武侠 check",
-      "description": "武侠RPG 判定掷骰。仅在 go 已完成、等待 judge 时调用；结果会留痕，judge 时核对是否已高亮带入剧情。判断随机事件请用 wuxia_random_event。",
+      "description": "武侠RPG 判定掷骰。普通 go 无界面后、首次 plot-writing 前按需调用；结果暂存留痕，剧情须高亮带入判定结果。判断随机事件请用 wuxia_random_event。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -215,7 +232,7 @@
       "name": "wuxia_random_event",
       "operation": "random-event",
       "title": "武侠 random-event",
-      "description": "武侠RPG 随机事件判定。仅在 go 已完成、等待 judge 时调用；返回触发/未触发，不落盘留痕。",
+      "description": "武侠RPG 随机事件判定。普通 go 无界面后、首次 plot-writing 前按需调用；返回触发/未触发，结果暂存供本轮重试复用。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -261,7 +278,7 @@
       "name": "wuxia_scene_prepare",
       "operation": "scene-prepare",
       "title": "武侠 scene prepare",
-      "description": "武侠RPG 批量准备与预校验场景登记、隔离和重连。仅在 go 已完成、等待 judge 时调用；不落正式地图，最终由 judge 的「场景-采用草稿」原子结算。传空场景数组可清除本轮草稿。",
+      "description": "武侠RPG plot-writing 成功后，按需一次性准备场景登记、隔离或重连。通过校验后本轮不得修改，全部草稿由只传槽位的 judge 自动采用。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -272,7 +289,8 @@
           },
           "场景": {
             "type": "array",
-            "description": "本轮最新场景规划批次；空数组表示清除草稿",
+            "description": "本轮一次性场景规划批次；通过校验后不得覆盖",
+            "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -327,7 +345,6 @@
             }
           },
           "剩余配额": {"type": "integer"},
-          "已清除": {"type": "boolean"},
           "错误": {"type": "string"},
           "状态冲突": {"type": "string"},
           "turn_state": {"type": "string"}
@@ -338,7 +355,7 @@
       "name": "wuxia_quest_prepare",
       "operation": "quest-prepare",
       "title": "武侠 quest prepare",
-      "description": "武侠RPG 批量准备与预校验即兴线索蓝图。仅在 go 已完成、等待 judge 时调用；最新成功批次覆盖本轮旧草稿，最终 judge 按名称列表原子采用。",
+      "description": "武侠RPG plot-writing 成功后，按需一次性准备任务蓝图。通过校验后本轮不得修改，全部草稿由只传槽位的 judge 自动采用。",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -349,7 +366,7 @@
           },
           "任务": {
             "type": "array",
-            "description": "本轮最新任务草稿批次，可混合创建和扩展",
+            "description": "本轮一次性任务草稿批次，可混合创建、扩展、修改和关闭；通过校验后不得覆盖",
             "minItems": 1,
             "items": {
               "type": "object",
@@ -359,12 +376,14 @@
                   "type": "string",
                   "enum": [
                     "创建",
-                    "扩展"
+                    "扩展",
+                    "修改",
+                    "关闭"
                   ]
                 },
                 "蓝图": {
                   "type": "object",
-                  "description": "完整创建蓝图或扩展定义",
+                  "description": "创建/扩展/修改蓝图；关闭蓝图须含名称与非空描述，可选节点",
                   "additionalProperties": true
                 },
                 "隐藏": {

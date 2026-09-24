@@ -46,12 +46,12 @@ class SceneDraftStoreTest(unittest.TestCase):
             scene_drafts.clear_round(1, 3, self.save_dir)
             self.assertFalse(os.path.exists(scene_drafts.scene_drafts_path(1, self.save_dir)))
 
-    def test_empty_batch_clears_draft(self):
+    def test_empty_batch_is_rejected_without_clearing_draft(self):
         with patch("store.scene_drafts.sm._slot_writable", return_value=True):
             scene_drafts.write_batch(1, 3, self.operations, self.save_dir)
-            result = scene_drafts.write_batch(1, 3, [], self.save_dir)
-        self.assertEqual(result["operations"], [])
-        self.assertFalse(os.path.exists(scene_drafts.scene_drafts_path(1, self.save_dir)))
+            with self.assertRaisesRegex(ValueError, "非空数组"):
+                scene_drafts.write_batch(1, 3, [], self.save_dir)
+        self.assertEqual(scene_drafts.read_draft(1, self.save_dir)["operations"], self.operations)
 
     def test_corruption_and_hash_mismatch_are_rejected(self):
         path = scene_drafts.scene_drafts_path(1, self.save_dir)

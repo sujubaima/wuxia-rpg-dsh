@@ -37,8 +37,9 @@ SLOT_DATA_SUBDIR = ".data"
 
 
 def slot_path(slot, save_dir=None):
-    """返回 slot 号对应的目录路径（slot 可为 int 或 str）。"""
-    return os.path.join(save_dir if save_dir is not None else SAVE_DIR, f"slot_{int(slot)}")
+    """返回 slot 的当前视图路径（已提交代目录或待提交工作区）。"""
+    from store import turn_workspace
+    return turn_workspace.slot_path(slot, save_dir if save_dir is not None else SAVE_DIR)
 
 
 def slot_data_dir(slot, save_dir=None):

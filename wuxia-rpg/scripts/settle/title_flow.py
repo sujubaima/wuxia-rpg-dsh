@@ -120,7 +120,9 @@ def validate_identity(draft, check_existing=True):
     if not 16 <= age <= 80:
         return "年龄须在 16～80 岁之间。"
     if check_existing:
-        names = {str(item.get("角色名") or "").strip() for item in sm.list_all_saves()}
+        from store import turn_workspace
+        with turn_workspace.slot_view("active"):
+            names = {str(item.get("角色名") or "").strip() for item in sm.list_all_saves()}
         if name.strip() in names:
             return f"「{name.strip()}」已有角色档，请另起一名。"
     return ""

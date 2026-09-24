@@ -26,26 +26,20 @@ from quest.presets import build_initial_preset_state
 from quest.world_facts import empty_world_facts
 from store import quest_drafts
 from store import save_manager as sm
-from world import scene as sc
 
 
-def judge_elements(slot, save_dir, changes=None):
-    """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」的目的地
-    （功能NPC校验在变更应用后按新位置执行）；功能场景须含绑定功能NPC与全套特殊指令。"""
-    position = None
-    for action in changes or []:
-        if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
-            position = action.get("位置") or action.get("目的地")
-    if not position:
-        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
-    region, _, scene = position.partition("·")
-    stype = sc.scene_type(slot, region, scene)
-    npc = sc.scene_npc(slot, region, scene)
-    commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
-    if npc and commands:
-        return [{"主体": npc, "描写": "当值",
-                 "特殊指令": [{"名称": c, "可用": True} for c in commands]}]
-    return [{"主体": "四周", "描写": "一切如常"}]
+def assert_new_slot_is_pending(test, save_dir, slot):
+    runtime = os.path.join(save_dir, f"slot_{slot}", ".runtime")
+    test.assertTrue(os.path.isfile(os.path.join(runtime, "pending_generation.json")))
+    test.assertFalse(os.path.exists(os.path.join(runtime, "active_generation.json")))
+    test.assertNotIn(slot, [row["slot"] for row in sm.list_slots(save_dir)])
+    test.assertEqual(sm.list_all_saves(save_dir=save_dir), [])
+
+
+def assert_new_slot_is_published(test, save_dir, slot):
+    runtime = os.path.join(save_dir, f"slot_{slot}", ".runtime")
+    test.assertTrue(os.path.isfile(os.path.join(runtime, "active_generation.json")))
+    test.assertIn(slot, [row["slot"] for row in sm.list_slots(save_dir)])
 
 
 FACT = "scene:study.secret_found@world"
@@ -770,14 +764,22 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
     def _go(self, actions):
         return self._run("go", {"槽位": self.slot, "行为": actions})
 
+    def _plot(self, actions, story):
+        return self._run("plot-writing", {"槽位": self.slot, "行为": actions,
+                                         "当前剧情": story,
+                                         "场景要素": [{"主体": "驿丞", "描写": "当值", "特殊指令": [{"名称": "远行（舟车）", "可用": True}]}],
+                                         "提及地点": []})
+
     def _judge(self, actions, story):
-        return self._run("judge", {"槽位": self.slot, "行为": actions, "当前剧情": story,
-                                   "场景要素": judge_elements(self.slot, self.save_dir, actions),
-                                   "提及地点": []})
+        plotted = self._plot(actions, story)
+        self.assertTrue(plotted.get("ok"), plotted)
+        return self._run("judge", {"槽位": self.slot})
 
     def _slot_file(self, filename):
-        path = os.path.join(self.save_dir, f"slot_{self.slot}", filename)
-        with open(path, encoding="utf-8") as file:
+        root = os.path.join(self.save_dir, f"slot_{self.slot}")
+        with open(os.path.join(root, ".runtime", "active_generation.json"), encoding="utf-8") as file:
+            generation = json.load(file)["generation"]
+        with open(os.path.join(root, ".generations", generation, filename), encoding="utf-8") as file:
             return file.read()
 
     def test_reject_then_recover(self):
@@ -785,8 +787,10 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
 
         created = self._go([{"类型": "创建角色", "角色": gate_character()}])
         self.assertIsNone(created.get("错误"), created)
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
         opened = self._judge([], OPENING_ERA_TEMPLATE + "\n\n打回校验者初入江湖。")
         self.assertIsNone(opened.get("错误"), opened)
+        assert_new_slot_is_published(self, self.save_dir, self.slot)
 
         # 轮1：建任务 + 事实 idle（扩展点条件未成立）→ 正常结算
         self.assertIsNone(self._go([{"类型": "其他行为", "描述": "查看四周"}]).get("错误"))
@@ -797,7 +801,9 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
         self.assertIsNone(built.get("错误"), built)
 
         # 轮2：事实使扩展点条件成立 → judge 整体打回
+        active_before_go = self._slot_file("quest_state.json")
         self.assertIsNone(self._go([{"类型": "其他行为", "描述": "继续查探"}]).get("错误"))
+        self.assertEqual(self._slot_file("quest_state.json"), active_before_go)
         before = {
             name: self._slot_file(name)
             for name in ("world_facts.json", "quest_state.json", "explore.json",
@@ -812,7 +818,7 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
         for name, content in before.items():
             self.assertEqual(self._slot_file(name), content, name)
 
-        # 恢复：quest-prepare 扩展 → judge 采纳 + 重设事实 → 扩展点亮
+        # 恢复：quest-prepare 扩展 → judge 自动采用原剧情事实与扩展草稿 → 扩展点亮
         prepared = self._run("quest-prepare", {"槽位": self.slot, "任务": [{
             "操作": "扩展",
             "蓝图": {
@@ -824,10 +830,7 @@ class JudgeExtensionGateIntegrationTest(unittest.TestCase):
             },
         }]})
         self.assertTrue(prepared.get("ok"), prepared)
-        recovered = self._judge([
-            {"类型": "线索-采用草稿", "名称列表": ["扩展打回"]},
-            {"类型": "事实-修订", "事实": GATE_FACT, "值": "reached", "原因": "追查有新进展。"},
-        ], "扩展后继收束。")
+        recovered = self._run("judge", {"槽位": self.slot})
         self.assertIsNone(recovered.get("错误"), recovered)
         quest_state = json.loads(self._slot_file("quest_state.json"))
         runtime = quest_state["runtimes"]["扩展打回"]
@@ -861,27 +864,68 @@ class MentionedSceneCheckTest(unittest.TestCase):
         created = self._run("go", {"槽位": self.slot,
                                    "行为": [{"类型": "创建角色", "角色": gate_character("查点人")}]})
         self.assertIsNone(created.get("错误"), created)
-        opened = self._run("judge", {
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
+        plot = self._run("plot-writing", {
             "槽位": self.slot, "行为": [], "提及地点": [],
-            "场景要素": judge_elements(self.slot, self.save_dir),
+            "场景要素": [{"主体": "驿丞", "描写": "当值", "特殊指令": [{"名称": "远行（舟车）", "可用": True}]}],
             "当前剧情": OPENING_ERA_TEMPLATE + "\n\n查点人初入江湖。"})
+        self.assertTrue(plot.get("ok"), plot)
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
+        opened = self._run("judge", {"槽位": self.slot})
         self.assertIsNone(opened.get("错误"), opened)
+        assert_new_slot_is_published(self, self.save_dir, self.slot)
+
+    def test_failed_opening_judge_keeps_new_slot_invisible_until_retry(self):
+        from engine import OPENING_ERA_TEMPLATE
+
+        created = self._run("go", {"槽位": self.slot,
+                                   "行为": [{"类型": "创建角色", "角色": gate_character("查点人")}]})
+        self.assertIsNone(created.get("错误"), created)
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
+        story = OPENING_ERA_TEMPLATE + "\n\n查点人初入江湖。"
+        invalid = self._run("plot-writing", {
+            "槽位": self.slot, "行为": [], "当前剧情": story,
+            "场景要素": [{"主体": "驿丞", "描写": "当值",
+                       "特殊指令": [{"名称": "远行（舟车）", "可用": True}]}],
+            "提及地点": ["泉州·幻影楼"],
+        })
+        self.assertTrue(invalid.get("ok"), invalid)
+        rejected = self._run("judge", {"槽位": self.slot})
+        self.assertIn("scene-prepare", rejected.get("错误") or "")
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
+
+        prepared = self._run("scene-prepare", {
+            "槽位": self.slot,
+            "场景": [{"操作": "登记", "区域": "泉州", "场景": "幻影楼"}],
+        })
+        self.assertTrue(prepared.get("ok"), prepared)
+        assert_new_slot_is_pending(self, self.save_dir, self.slot)
+        opened = self._run("judge", {"槽位": self.slot})
+        self.assertIsNone(opened.get("错误"), opened)
+        assert_new_slot_is_published(self, self.save_dir, self.slot)
 
     def _go(self):
         result = self._run("go", {"槽位": self.slot,
                                   "行为": [{"类型": "其他行为", "描述": "查探四周"}]})
         self.assertIsNone(result.get("错误"), result)
 
+    def _plot(self, **extra):
+        return self._run("plot-writing", {"槽位": self.slot, "行为": [],
+                                         "当前剧情": "一路无话。",
+                                         "场景要素": [{"主体": "驿丞", "描写": "当值", "特殊指令": [{"名称": "远行（舟车）", "可用": True}]}],
+                                         **extra})
+
     def _judge(self, **extra):
-        return self._run("judge", {"槽位": self.slot, "行为": [], "当前剧情": "一路无话。",
-                                   "场景要素": judge_elements(self.slot, self.save_dir),
-                                   **extra})
+        plotted = self._plot(**extra)
+        if not plotted.get("ok"):
+            return plotted
+        return self._run("judge", {"槽位": self.slot})
 
     def test_missing_field_is_rejected_then_recovered(self):
         self._open()
         self._go()
         rejected = self._judge()
-        self.assertIn("须传「提及地点」", rejected.get("错误") or "")
+        self.assertIn("须提供 提及地点 数组", rejected.get("错误") or "")
         self.assertEqual(rejected.get("界面"), "exploration-ui")  # gm_error 形态
         recovered = self._judge(提及地点=[])
         self.assertIsNone(recovered.get("错误"), recovered)
@@ -898,10 +942,7 @@ class MentionedSceneCheckTest(unittest.TestCase):
             "场景": [{"操作": "登记", "区域": "苏州", "场景": "幻影楼"}],
         })
         self.assertTrue(prepared.get("ok"), prepared)
-        fixed = self._run("judge", {
-            "槽位": self.slot, "提及地点": ["苏州·幻影楼"], "当前剧情": "行至幻影楼下。",
-            "场景要素": judge_elements(self.slot, self.save_dir),
-            "行为": [{"类型": "场景-采用草稿"}]})
+        fixed = self._run("judge", {"槽位": self.slot})
         self.assertIsNone(fixed.get("错误"), fixed)
         facts = json.loads(self._slot_file("world_facts.json"))
         self.assertIn("scene:苏州·幻影楼.exists@world", facts.get("records") or {})
@@ -923,11 +964,13 @@ class MentionedSceneCheckTest(unittest.TestCase):
         self._open()
         self._go()
         rejected = self._judge(提及地点="玄妙观")
-        self.assertIn("须传「提及地点」数组", rejected.get("错误") or "")
+        self.assertIn("须提供 提及地点 数组", rejected.get("错误") or "")
 
     def _slot_file(self, filename):
-        path = os.path.join(self.save_dir, f"slot_{self.slot}", filename)
-        with open(path, encoding="utf-8") as file:
+        root = os.path.join(self.save_dir, f"slot_{self.slot}")
+        with open(os.path.join(root, ".runtime", "active_generation.json"), encoding="utf-8") as file:
+            generation = json.load(file)["generation"]
+        with open(os.path.join(root, ".generations", generation, filename), encoding="utf-8") as file:
             return file.read()
 
 

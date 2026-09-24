@@ -88,16 +88,13 @@ def read_draft(slot, save_dir=sm.DEFAULT_SAVE_DIR):
 
 
 def write_batch(slot, round_number, operations, save_dir=sm.DEFAULT_SAVE_DIR):
-    """以最新成功批次完整替换当前场景草稿。空批次明确清除草稿。"""
+    """写入当前 round 的非空场景草稿批次。"""
     if not sm._slot_writable(slot):
         raise ValueError("场景草稿槽位须为正整数")
     if type(round_number) is not int or round_number < 0:
         raise ValueError("场景草稿 round 须为非负整数")
-    if not isinstance(operations, list):
-        raise ValueError("场景草稿批次须为数组")
-    if not operations:
-        clear_all(slot, save_dir)
-        return _empty(slot)
+    if not isinstance(operations, list) or not operations:
+        raise ValueError("场景草稿批次须为非空数组")
     path = scene_drafts_path(slot, save_dir)
     normalized = _validate_operations(path, operations)
     data = {

@@ -1586,7 +1586,8 @@ def _act_create_slot(slot, explore, action):
                  "msg": f"创建角色必须传入正整数槽位，最新可用槽位为 {next_slot}",
                  "错误码": "create_slot_required", "next_slot": next_slot}]
     try:
-        r = sm.create_slot(char, slot)
+        from store import turn_workspace
+        r = sm.create_slot(char, slot, pending=turn_workspace.current_view() == "pending")
     except sm.SlotOccupiedError as exc:
         return [{"ok": False, "msg": str(exc), "错误码": exc.code,
                  "next_slot": exc.next_slot}]
@@ -1672,7 +1673,10 @@ def _act_restore(slot, explore, action):
     target = action.get("目标")
     if not target:
         return [{"ok": False, "msg": "加载存档须传入 目标（File_N/时间戳/label/子串）"}]
-    state = sm.restore(slot, target)
+    try:
+        state = sm.restore(slot, target)
+    except FileNotFoundError as exc:
+        return [{"ok": False, "msg": str(exc)}]
     for clear_drafts in (qd.clear_all, sd.clear_all):
         try:
             clear_drafts(slot)
@@ -1716,18 +1720,22 @@ def _act_delete(slot, explore, action):
         target_slot = int(action["槽位"]) if action.get("槽位") is not None else slot
     except (TypeError, ValueError):
         return [{"ok": False, "msg": "槽位须为整数 slot 编号"}]
-    if target:
+    if not sm._slot_writable(target_slot):
+        return [{"ok": False, "msg": "删除存档须指定正整数目标槽位"}]
+    from store import turn_workspace
+    # 锁须覆盖删除与列表重建；judge 同样锁目标槽位，避免删除与发布并发。
+    with turn_workspace.slot_lock(target_slot):
         try:
-            remaining = sm.delete_save(target_slot, str(target))
-        except FileNotFoundError as e:
-            return [{"ok": False, "msg": str(e)}]
-        return [{"ok": True, "msg": f"已删除 slot {target_slot} 存档 {target}（剩余{remaining}个）",
-                 "槽位": target_slot,
+            if target:
+                remaining = sm.delete_save(target_slot, str(target))
+                message = f"已删除 slot {target_slot} 存档 {target}（剩余{remaining}个）"
+            else:
+                sm.delete_slot(target_slot)
+                message = f"已删除角色档 slot {target_slot}"
+        except (FileNotFoundError, sm.PendingSlotDeletionError) as exc:
+            return [{"ok": False, "msg": str(exc)}]
+        return [{"ok": True, "msg": message, "槽位": target_slot,
                  "存档列表": sm.list_all_saves()}]
-    sm.delete_slot(target_slot)
-    return [{"ok": True, "msg": f"已删除角色档 slot {target_slot}",
-             "槽位": target_slot,
-             "存档列表": sm.list_all_saves()}]
 
 _ACTION_HANDLERS = {
     "休息": _act_rest,

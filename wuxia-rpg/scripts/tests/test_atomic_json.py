@@ -31,7 +31,7 @@ class AtomicJsonTest(unittest.TestCase):
             self.assertEqual(compact.read_text(encoding="utf-8"), '{"名称": "张三", "数值": 1}')
             self.assertIn('\n  "名称": "张三"', pretty.read_text(encoding="utf-8"))
             self.assertEqual(json.loads(pretty.read_text(encoding="utf-8")), value)
-            fsync.assert_called_once()
+            self.assertEqual(fsync.call_count, 2)  # 文件内容及替换后的父目录项
             self.assertEqual(sorted(Path(directory).rglob("*")), [compact, pretty.parent, pretty])
 
     def test_serialization_failure_keeps_old_target_and_cleans_temp(self):

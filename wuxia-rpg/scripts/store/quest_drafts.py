@@ -116,7 +116,7 @@ def read_drafts(slot, save_dir=sm.DEFAULT_SAVE_DIR):
 
 
 def write_batch(slot, round_number, records, save_dir=sm.DEFAULT_SAVE_DIR):
-    """以最新成功批次完整替换当前草稿文件。"""
+    """写入当前 round 的非空任务草稿批次。"""
     if not sm._slot_writable(slot):
         raise ValueError("任务草稿槽位须为正整数")
     if type(round_number) is not int or round_number < 0:

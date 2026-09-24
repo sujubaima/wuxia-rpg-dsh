@@ -331,12 +331,16 @@ def next_slot_number(save_dir=DEFAULT_SAVE_DIR):
     """扫描已有 slot_* 目录，返回下一个 slot 号（max+1，无则 1）"""
     if not os.path.isdir(save_dir):
         return 1
+    from store import turn_workspace
     max_n = 0
     for fn in os.listdir(save_dir):
         m = SLOT_RE.match(fn)
-        if m and os.path.isdir(os.path.join(save_dir, fn)):
+        if m:
             max_n = max(max_n, int(m.group(1)))
-    return max_n + 1
+    candidate = max_n + 1
+    while os.path.exists(turn_workspace.physical_slot_path(candidate, save_dir)):
+        candidate += 1
+    return candidate
 
 
 class SlotOccupiedError(Exception):
@@ -697,9 +701,10 @@ def list_slots(save_dir=DEFAULT_SAVE_DIR):
     if not os.path.isdir(save_dir):
         return []
     slots = []
+    from store import turn_workspace
     for fn in os.listdir(save_dir):
         m = SLOT_RE.match(fn)
-        if not (m and os.path.isdir(os.path.join(save_dir, fn))):
+        if not (m and turn_workspace.active_exists(int(m.group(1)), save_dir)):
             continue
         n = int(m.group(1))
         meta = read_meta(n, save_dir) or {}
@@ -762,11 +767,11 @@ def _init_secondary(character):
     return character
 
 
-def create_slot(character, slot, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR):
-    """在调用方指定的空闲 slot 建档；槽位目录以原子创建完成占位。
+def create_slot(character, slot, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DATA_DIR,
+                *, pending=False):
+    """在空闲 slot 建档；pending=True 时只写待提交代，publish 前不可见。
 
-    character: 角色完整 dict（含 名称 等字段）。成功占位后发放起始物资、派生二级属性，
-    再写入玩家角色、meta 与初始 explore；失败时不保留半成品槽位。
+    默认保持原有立即建档 API；失败时不保留半成品槽位。
     """
     if not isinstance(slot, int) or isinstance(slot, bool) or slot <= 0:
         raise ValueError("创建角色 slot 必须是正整数")
@@ -775,51 +780,66 @@ def create_slot(character, slot, save_dir=DEFAULT_SAVE_DIR, data_dir=DEFAULT_DAT
 
     ensure_dir(save_dir)
     n = slot
-    root = slot_path(n, save_dir)
-    try:
-        os.mkdir(root)
-    except FileExistsError as exc:
-        raise SlotOccupiedError(n, next_slot_number(save_dir)) from exc
-
-    try:
-        name = character["名称"]
-        _grant_starter_pack(character)
-        _init_secondary(character)
-        # 写时复制：仅建空 .data/characters/，其余条目经 dao 回退基线读取。
-        os.makedirs(os.path.join(slot_data_dir(n, save_dir), "characters"), exist_ok=True)
-        dq.set_data_dir(slot_data_dir(n, save_dir))
-        dq.write_character(name, character)
-        meta = {
-            "slot": n,
-            "角色名": name,
-            "版本": get_version(),
-            "创建时间": _now_timestamp(),
-            "最近存档": None,
-            "存档数": 0,
-        }
-        write_meta(n, meta, save_dir)
-        region, t = _random_location_time()
-        initial_state = {
-            "经历概括": f"{name}初入江湖。",
-            "任务摘要及进度": [],
-            "队伍": [name],
-            "当前位置": region,
-            "当前时间": t,
-            "体力": STAMINA_MAX,
-        }
-        presets = build_initial_preset_state(data_dir, character, initial_state)
-        write_explore(n, initial_state, save_dir, preserve_narrative=False)
-        write_world_facts(n, presets["world_facts"], save_dir)
-        write_quest_state(n, presets["quest_state"], save_dir)
-        write_round(n, 0, save_dir)
-        return {"slot": n, "当前位置": region, "当前时间": t,
-                "剩余": rounds_until_save(n, save_dir),
-                "GM线索提示": presets["hints"]}
-    except Exception:
-        shutil.rmtree(root, ignore_errors=True)
-        raise
+    from store import turn_workspace
+    root = turn_workspace.physical_slot_path(n, save_dir)
+    with turn_workspace.slot_lock(n, save_dir):
+        owned_reservation = not os.path.exists(root)
+        try:
+            if pending:
+                if owned_reservation:
+                    turn_workspace.begin_new_pending(n, save_dir)
+                elif (turn_workspace.active_exists(n, save_dir)
+                      or not turn_workspace.pending_exists(n, save_dir)):
+                    raise FileExistsError(root)
+            else:
+                os.mkdir(root)
+        except FileExistsError as exc:
+            raise SlotOccupiedError(n, next_slot_number(save_dir)) from exc
+        try:
+            with turn_workspace.slot_view("pending" if pending else "legacy"):
+                if pending and os.listdir(slot_path(n, save_dir)):
+                    raise SlotOccupiedError(n, next_slot_number(save_dir))
+                return _initialize_slot(character, n, save_dir, data_dir)
+        except BaseException:
+            if owned_reservation:
+                shutil.rmtree(root, ignore_errors=True)
+            raise
 
 
+def _initialize_slot(character, n, save_dir, data_dir):
+    name = character["名称"]
+    _grant_starter_pack(character)
+    _init_secondary(character)
+    # 写时复制：仅建空 .data/characters/，其余条目经 dao 回退基线读取。
+    os.makedirs(os.path.join(slot_data_dir(n, save_dir), "characters"), exist_ok=True)
+    dq.set_data_dir(slot_data_dir(n, save_dir))
+    dq.write_character(name, character)
+    meta = {
+        "slot": n,
+        "角色名": name,
+        "版本": get_version(),
+        "创建时间": _now_timestamp(),
+        "最近存档": None,
+        "存档数": 0,
+    }
+    write_meta(n, meta, save_dir)
+    region, t = _random_location_time()
+    initial_state = {
+        "经历概括": f"{name}初入江湖。",
+        "任务摘要及进度": [],
+        "队伍": [name],
+        "当前位置": region,
+        "当前时间": t,
+        "体力": STAMINA_MAX,
+    }
+    presets = build_initial_preset_state(data_dir, character, initial_state)
+    write_explore(n, initial_state, save_dir, preserve_narrative=False)
+    write_world_facts(n, presets["world_facts"], save_dir)
+    write_quest_state(n, presets["quest_state"], save_dir)
+    write_round(n, 0, save_dir)
+    return {"slot": n, "当前位置": region, "当前时间": t,
+            "剩余": rounds_until_save(n, save_dir),
+            "GM线索提示": presets["hints"]}
 def character_derived_view(slot, name, save_dir=DEFAULT_SAVE_DIR):
     """返回与 `query_data(..., derived=True)` 同构的角色派生视图 dict。
 
@@ -1025,24 +1045,49 @@ def prune(slot, save_dir=DEFAULT_SAVE_DIR, keep=MAX_SAVES_PER_SLOT):
     return deleted
 
 
+class PendingSlotDeletionError(RuntimeError):
+    """目标槽位还有未提交工作，删除必须等待裁定或显式重置。"""
+
+
+def _reject_pending_delete(slot, save_dir):
+    from store import turn_state, turn_workspace
+    if turn_workspace.pending_exists(slot, save_dir):
+        raise PendingSlotDeletionError(f"槽位 {slot} 有待提交回合，请先完成当前回合")
+    if turn_workspace.active_exists(slot, save_dir):
+        with turn_workspace.slot_view("active"):
+            state = turn_state.read_state(slot, save_dir)["state"]
+        if state != turn_state.READY:
+            raise PendingSlotDeletionError(f"槽位 {slot} 有未完成回合，请先完成裁定")
+
+
 def delete_save(slot, target, save_dir=DEFAULT_SAVE_DIR):
-    """删 slot 内单个存档点（target 同 restore 解析：File_N/时间戳/label/子串）。
-    删后更新 meta 的存档数/最近存档。返回剩余存档数。"""
-    path = _resolve_save_path(target, slot, save_dir)
-    os.remove(path)
-    items = list_saves(slot, save_dir)
-    meta = read_meta(slot, save_dir) or {"slot": int(slot), "角色名": ""}
-    meta["最近存档"] = items[-1][0] if items else None
-    meta["存档数"] = len(items)
-    write_meta(slot, meta, save_dir)
-    return len(items)
+    """在目标槽位锁下删除一个存档点并更新元信息；待提交回合禁止删除。"""
+    if not _slot_writable(slot):
+        raise ValueError("删除存档须指定正整数槽位")
+    from store import turn_workspace
+    with turn_workspace.slot_lock(slot, save_dir):
+        _reject_pending_delete(slot, save_dir)
+        with turn_workspace.slot_view("active"):
+            path = _resolve_save_path(target, slot, save_dir)
+            os.remove(path)
+            items = list_saves(slot, save_dir)
+            meta = read_meta(slot, save_dir) or {"slot": int(slot), "角色名": ""}
+            meta["最近存档"] = items[-1][0] if items else None
+            meta["存档数"] = len(items)
+            write_meta(slot, meta, save_dir)
+            return len(items)
 
 
 def delete_slot(slot, save_dir=DEFAULT_SAVE_DIR):
-    """删整个 slot 目录（角色 + 全部存档点 + explore.json/meta）。不可恢复。"""
-    sp = slot_path(slot, save_dir)
-    if os.path.exists(sp):
-        shutil.rmtree(sp)
+    """在目标槽位锁下删除整个物理目录；待提交回合禁止删除。"""
+    if not _slot_writable(slot):
+        raise ValueError("删除存档须指定正整数槽位")
+    from store import turn_workspace
+    with turn_workspace.slot_lock(slot, save_dir):
+        _reject_pending_delete(slot, save_dir)
+        sp = turn_workspace.physical_slot_path(slot, save_dir)
+        if os.path.exists(sp):
+            shutil.rmtree(sp)
 
 
 def save(state, slot, save_dir=DEFAULT_SAVE_DIR, label=None, keep=MAX_SAVES_PER_SLOT,

@@ -883,16 +883,18 @@ def judge_elements(slot, save_dir, changes=None):
     """按 judge 落定后位置构造最小合法场景要素：优先取行为中玩家「抵达」的目的地
     （功能NPC校验在变更应用后按新位置执行）；功能场景须含绑定功能NPC与全套特殊指令。"""
     from store import save_manager as sm
+    from store import turn_workspace as workspace
     from world import scene as sc
     position = None
     for action in changes or []:
         if isinstance(action, dict) and action.get("类型") == "抵达" and not action.get("角色"):
             position = action.get("位置") or action.get("目的地")
-    if not position:
-        position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
-    region, _, scene = position.partition("·")
-    stype = sc.scene_type(slot, region, scene)
-    npc = sc.scene_npc(slot, region, scene)
+    with workspace.slot_view("pending" if workspace.pending_exists(slot, save_dir) else "active"):
+        if not position:
+            position = (sm.read_explore(slot, save_dir) or {}).get("当前位置") or ""
+        region, _, scene = position.partition("·")
+        stype = sc.scene_type(slot, region, scene)
+        npc = sc.scene_npc(slot, region, scene)
     commands = {"驿站": ["远行（舟车）"], "店铺": ["购买", "出售"], "客栈": ["投宿"]}.get(stype)
     if npc and commands:
         return [{"主体": npc, "描写": "当值",
@@ -903,12 +905,17 @@ def judge_elements(slot, save_dir, changes=None):
 def run_engine(slot, payload, cmd, save_dir, mode=None):
     payload = dict(payload)
     if cmd == "judge":
-        payload.setdefault("提及地点", [])
-        # 场景要素为非战斗 judge 必填：骨架按落定位置自动补全（显式传入时不覆盖）
-        battle = any(isinstance(a, dict) and a.get("类型") in _BATTLE_JUDGE_ACTIONS
+        # 战斗开始/推进/结束走专用 judge；战斗触发是普通剧情变更。
+        battle = any(isinstance(a, dict) and a.get("类型") in {"战斗-开始", "战斗-推进", "战斗-结束"}
                      for a in payload.get("行为") or [])
-        if "场景要素" not in payload and not battle:
-            payload["场景要素"] = judge_elements(slot, save_dir, payload.get("行为"))
+        if not battle and payload:
+            payload.setdefault("提及地点", [])
+            if "场景要素" not in payload:
+                payload["场景要素"] = judge_elements(slot, save_dir, payload.get("行为"))
+            drafted = run_engine(slot, payload, "plot-writing", save_dir, mode=mode)
+            if drafted.get("错误"):
+                return drafted
+            payload = {}
     env = dict(os.environ, WUXIA_RPG_SAVE_DIR=save_dir)
     env.pop("WUXIA_RPG_RENDER_MODULE", None)
     if mode is not None:
@@ -917,7 +924,7 @@ def run_engine(slot, payload, cmd, save_dir, mode=None):
         [sys.executable, ENGINE, cmd],
         input=json.dumps({"槽位": slot, **payload}, ensure_ascii=False),
         capture_output=True, text=True, env=env, cwd=SCRIPTS)
-    if proc.returncode != 0:
+    if proc.returncode not in (0, 2):
         raise AssertionError(f"engine {cmd} 失败：{proc.stderr}")
     return json.loads(proc.stdout)
 
@@ -933,6 +940,9 @@ class EngineIntegrationTest(unittest.TestCase):
         cls.slot = title["next_slot"]
         created = run_engine(cls.slot, {"行为": [{"类型": "创建角色", "角色": CHAR}]}, "go", cls.save_dir)
         assert not created.get("错误"), created.get("错误")
+        assert created.get("turn_state") == "AWAITING_PLOT", created
+        from store import turn_workspace as workspace
+        assert not workspace.active_exists(cls.slot, cls.save_dir)
         # 开场 judge：落点为驿站功能场景，要素须含功能NPC+特殊指令
         cls.opening = run_engine(cls.slot, {
             "行为": [], "当前剧情": OPENING_ERA_TEMPLATE + "\n\n沈孤鸿初入江湖。",
@@ -958,13 +968,15 @@ class EngineIntegrationTest(unittest.TestCase):
                 {"主体": "驿丞", "描写": "案后整理文书",
                  "特殊指令": [{"名称": "远行（舟车）", "可用": True}]},
             ]}, "judge", self.save_dir)
-        self.assertFalse(opening.get("错误"))
+        self.assertFalse(opening.get("错误"), opening)
+        self.assertEqual(opening.get("turn_state"), "READY")
         return slot
 
     def _start_battle(self):
         slot = self._create_ready_slot()
         # 隔离用例中增强主控，确保开战自动推进稳定停在玩家回合，不受随机先手影响。
-        char_path = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters", "我方", "沈孤鸿.json")
+        from store import save_manager as sm
+        char_path = os.path.join(sm.slot_data_dir(slot, self.save_dir), "characters", "我方", "沈孤鸿.json")
         with open(char_path, "r", encoding="utf-8") as file:
             player = json.load(file)
         player["一级属性"] = {"内功": 1000, "力道": 1000, "身法": 1000, "根骨": 1000}
@@ -986,7 +998,8 @@ class EngineIntegrationTest(unittest.TestCase):
         return slot, started
 
     def _rewrite_battle_hp(self, slot, player_hp, enemy_hp):
-        path = os.path.join(self.save_dir, f"slot_{slot}", ".runtime", "battle", "battle_state.json")
+        from store import save_manager as sm
+        path = os.path.join(sm.slot_path(slot, self.save_dir), ".runtime", "battle", "battle_state.json")
         with open(path, "r", encoding="utf-8") as file:
             state = json.load(file)
         for character in state["角色列表"]:
@@ -1034,7 +1047,8 @@ class EngineIntegrationTest(unittest.TestCase):
     def test_battle_trigger_rejects_unpersisted_participants_and_rolls_back(self):
         slot = self._create_ready_slot()
         run_engine(slot, {"行为": [{"类型": "交谈观察", "目标": "周遭"}]}, "go", self.save_dir)
-        explore_path = os.path.join(self.save_dir, f"slot_{slot}", "explore.json")
+        from store import save_manager as sm
+        explore_path = os.path.join(sm.slot_path(slot, self.save_dir), "explore.json")
         with open(explore_path, "r", encoding="utf-8") as file:
             stamina_before = json.load(file)["体力"]
 
@@ -1070,7 +1084,8 @@ class EngineIntegrationTest(unittest.TestCase):
         self.assertFalse(triggered.get("错误"), triggered)
         self.assertEqual(triggered.get("界面"), "exploration-battle-ui")
         self.assertEqual(triggered.get("turn_state"), "AWAITING_BATTLE_START")
-        character_root = os.path.join(self.save_dir, f"slot_{slot}", ".data", "characters")
+        from store import save_manager as sm
+        character_root = os.path.join(sm.slot_data_dir(slot, self.save_dir), "characters")
         self.assertTrue(any(
             "山贼甲.json" in files
             for _, _, files in os.walk(character_root)
@@ -1123,8 +1138,7 @@ class EngineIntegrationTest(unittest.TestCase):
                                              {"主体": "海风", "描写": "风" * 31},
                                          ]}, "judge", self.save_dir)
         self.assertEqual(overlong.get("界面"), "exploration-ui")
-        self.assertIn("场景要素【海风】", overlong.get("错误", ""))
-        self.assertIn("不得超过30字（当前31字）", overlong.get("错误", ""))
+        self.assertIn("场景要素描写不得超过30字", overlong.get("错误", ""))
         self.assertNotIn("渲染文本", overlong)
         nonfunctional_command = run_engine(self.slot, {
             "行为": [], "当前剧情": "夜色渐沉。",
@@ -1245,7 +1259,9 @@ class EngineIntegrationTest(unittest.TestCase):
         }]}, "go", self.save_dir)
         self.assertFalse(created.get("错误"), created)
         self.assertEqual(created.get("槽位"), slot)
-        self.assertEqual(created.get("turn_state"), "AWAITING_JUDGE")
+        self.assertEqual(created.get("turn_state"), "AWAITING_PLOT")
+        from store import turn_workspace as workspace
+        self.assertFalse(workspace.active_exists(slot, self.save_dir))
         changes = [item.get("变更") for item in created.get("结算") or []]
         self.assertIn("获得 长剑", changes)
         self.assertIn("学会 太乙玄门剑", changes)

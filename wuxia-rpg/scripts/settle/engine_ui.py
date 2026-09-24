@@ -595,7 +595,7 @@ def _region_info(slot, explore):
         return {}
     return {"区域提示": f"当前在【{region}】地区；查询场景图或区域人物可用 "
                       f"wuxia_map_query（不可用时 engine map-query）",
-            "区域人物": sc.scene_chars(slot, region, pos.split("·", 1)[1])}
+            "区域人物": sc.scene_chars(slot, region, pos.partition("·")[2]) if "·" in pos else []}
 
 def _inject_narrative(base, results):
     """汇总结算数组里的「当前剧情」「场景要素」为 base 顶层字段（供渲染），并从结算条目剔除，
