@@ -522,14 +522,14 @@ function renderSceneSvg(adj,cur,stationExit){
     const g=document.createElementNS('http://www.w3.org/2000/svg','g');
     const isCur=name===cur,isExit=name===stationExit;
     const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
-    r.setAttribute('x',cx(x)-NW/2);r.setAttribute('y',cy(y)-NH/2);
-    r.setAttribute('width',NW);r.setAttribute('height',NH);r.setAttribute('rx',8);
+    r.setAttribute('x',cx(x)-SNW/2);r.setAttribute('y',cy(y)-SNH/2);
+    r.setAttribute('width',SNW);r.setAttribute('height',SNH);r.setAttribute('rx',8);
     r.setAttribute('fill',isCur?'#2e2310':'#221c16');
     r.setAttribute('stroke',isCur?'#c8a456':'#4a3f2a');
     r.setAttribute('stroke-width',isCur?'2':'1');
     g.appendChild(r);
     const t=document.createElementNS('http://www.w3.org/2000/svg','text');
-    t.setAttribute('x',cx(x));t.setAttribute('y',cy(y)+Math.min(4,NH/2-10));
+    t.setAttribute('x',cx(x));t.setAttribute('y',cy(y)+Math.min(4,SNH/2-10));
     t.setAttribute('text-anchor','middle');t.setAttribute('font-size','12.5');
     t.setAttribute('fill',isCur?'#e8d8a8':'#b8a888');
     t.textContent=(isCur?'◈ ':'')+name+(isExit?' ⛟':'');

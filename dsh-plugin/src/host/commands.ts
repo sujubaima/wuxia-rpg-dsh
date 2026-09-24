@@ -69,8 +69,8 @@ export function registerWuxiaCommands(ctx: Context, serviceUrl: string, timeoutM
         `1) 为档案补写“人设”（性格与背景；不得点明具体目的、伏笔或明确门派归属）。\n` +
         `2) 调用 wuxia_go，顶层槽位首次必须传 ${slot}，行为为 [{"类型":"创建角色","角色":完整档案}]。\n` +
         `3) 若仅返回错误码 slot_occupied，读取响应 next_slot 并以同一完整档案继续重试；其他错误立即停止并说明。\n` +
-        `4) 成功后从 go 返回的“结算”中读取“新建slot”“落点”“当前时间”，以新建slot调用 wuxia_judge，行为传 []，据落点与时辰撰写开场“当前剧情”，并给出 3～5 个“场景要素”及精简“经历概括”。\n` +
-        `judge 应返回 exploration-ui，作为新角色首屏并接续后续游戏。`
+        `4) 成功后从 go 返回的“结算”中读取“新建slot”“落点”“当前时间”；go 的无界面结果尚未落盘，不得重跑 go。以新建slot调用 wuxia_plot_writing，据落点与时辰撰写开场“当前剧情”，给出 3～5 个“场景要素”、提及地点及精简“经历概括”。必要时随后准备场景/任务草稿。\n` +
+        `5) 最后仅以新建slot调用 wuxia_judge 提交整轮；judge 应返回 exploration-ui，作为新角色首屏并接续后续游戏。`
       inv.agent.followup(createUserMessage({
         content: [{ type: 'text' as const, text: directive }],
         source: { kind: 'wuxia-rpg', form: 'instructions' },

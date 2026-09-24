@@ -71,11 +71,11 @@ function needsNarration(
   result: Record<string, JsonValue>,
 ): boolean {
   if (!isMutation(action)) return false
-  if (!['购买', '出售', '远行（舟车）', '休息'].includes(String(action.类型))) return false
-  if (result.界面 !== undefined || result.错误 !== undefined) return false
+  if (result.界面 !== undefined || result.错误 !== undefined || result.状态冲突 !== undefined) return false
   const failed = Array.isArray(result.结算)
     && result.结算.some(entry => isRecord(entry) && entry.ok === false)
-  return !failed
+  return !failed && (result.turn_state === 'AWAITING_PLOT'
+    || ['购买', '出售', '远行（舟车）', '休息'].includes(String(action.类型)))
 }
 
 function narrationDirective(
@@ -91,18 +91,18 @@ function narrationDirective(
     stateKeys.filter(key => result[key] !== undefined).map(key => [key, result[key]]),
   )
   const continuation = action.类型 === '远行（舟车）'
-    ? '按 GM参考及 skill 规则完成随机事件和必要判定，据真实结算续写本回合剧情'
+    ? '按 GM参考及 skill 规则完成随机事件和必要判定，据暂存结算续写本回合剧情'
     : action.类型 === '休息'
-      ? '承接本次投宿/休息剧情，据真实结算续写本回合'
-      : '据真实结算续写本回合剧情'
+      ? '承接本次投宿/休息剧情，据暂存结算续写本回合'
+      : '据暂存结算续写本回合剧情'
   return (
     `用户正在 wuxia-rpg 游戏中，请加载 skill wuxia-rpg。\n` +
-    `【卡内交互结算续写】前端已直接调用 engine go 完成机制结算并落盘。\n` +
+    `【卡内交互结算续写】前端已直接调用 engine go 暂存本回合机制效果，尚未落盘。\n` +
     `行为：${JSON.stringify(action)}\n` +
-    `go 返回状态：${JSON.stringify(state)}\n` +
-    `不得再次调用 wuxia_go，不得重复扣除金钱、体力或推进时间。\n` +
-    `请从 go 之后的推演阶段继续：${continuation}，然后以槽位 ${slot} 调用 wuxia_judge ` +
-    `落盘当前剧情、场景要素和经历概括。\n` +
+    `go 暂存结果（非权威状态）：${JSON.stringify(state)}\n` +
+    `不得再次调用 wuxia_go，也不得重复提交金钱、体力或时间变更。\n` +
+    `请从 go 之后的推演阶段继续：${continuation}。先以槽位 ${slot} 调用 wuxia_plot_writing 提交当前剧情、场景要素、提及地点、经历概括及其他剧情状态变更；` +
+    `必要时随后调用 wuxia_scene_prepare / wuxia_quest_prepare 准备草稿；最后仅以槽位 ${slot} 调用 wuxia_judge 提交整轮。\n` +
     `wuxia_judge 应返回 exploration-ui；若返回渲染文本则原样输出，否则直接输出当前剧情。`
   )
 }
@@ -129,6 +129,9 @@ function validateActions(value: unknown): { actions?: Record<string, unknown>[];
     actions.push(item)
   }
   if (mutations > 1) return { error: '一次面板请求最多执行一个修改行为' }
+  if (mutations === 1 && actions.slice(0, -1).some(isMutation)) {
+    return { error: '修改行为必须是面板请求的最后一个行为' }
+  }
   return { actions }
 }
 
@@ -192,8 +195,8 @@ export function registerWuxiaPanelCommand(ctx: Context, serviceUrl: string, time
         }
       }
 
-      // 仅无界面机械修改需要回放游历；任何已有界面（含战前/战斗界面）都必须原样保留。
-      if (mutated && !followup && !returnedInterface) {
+      // 暂存回合不得通过「返回游戏」再发 go；即时修改无界面时才回放游历。
+      if (mutated && !followup && !returnedInterface && !results.some(result => result.错误 !== undefined || result.状态冲突 !== undefined)) {
         const latest = await callEngine(
           serviceUrl,
           timeoutMs,
@@ -208,8 +211,8 @@ export function registerWuxiaPanelCommand(ctx: Context, serviceUrl: string, time
         kind: 'success' as const,
         text: JSON.stringify({
           results,
-          ...(state ? { state } : {}),
-          ...(view ? { view } : {}),
+          ...(!followup && state ? { state } : {}),
+          ...(!followup && view ? { view } : {}),
           ...(followup ? { followup: true } : {}),
         }),
       }
