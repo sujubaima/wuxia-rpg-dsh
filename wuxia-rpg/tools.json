@@ -383,7 +383,7 @@
                 },
                 "蓝图": {
                   "type": "object",
-                  "description": "创建/扩展/修改蓝图；关闭蓝图须含名称与非空描述，可选节点",
+                  "description": "创建/扩展/修改蓝图；事实键须遵守 references/rules/wuxia-rpg-clue-rules.md 的闭集主体/谓词与比较类型规则，禁止 truth/progress/status/impossible 等抽象结论；关闭蓝图须含名称与非空描述，可选节点",
                   "additionalProperties": true
                 },
                 "隐藏": {

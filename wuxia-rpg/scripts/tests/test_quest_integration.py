@@ -42,8 +42,8 @@ def assert_new_slot_is_published(test, save_dir, slot):
     test.assertIn(slot, [row["slot"] for row in sm.list_slots(save_dir)])
 
 
-FACT = "scene:study.secret_found@world"
-EXTENSION_FACT = "scene:study.follow_up_route@world"
+FACT = "scene:study:secret-compartment.presence@world"
+EXTENSION_FACT = "information:study:follow-up.target@world"
 
 
 def blueprint(reward_prefix="study-secret", fact=FACT, name="书房暗痕"):
@@ -391,7 +391,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 1, explore, build_mutation_executor(), "judge", build_quest_trigger_registry()
             ) as session:
                 results = session.apply_mutations([
-                    {"类型": "事实-写入", "事实": "quest:v3:taihu.hook@world",
+                    {"类型": "事实-写入", "事实": "information:v3:taihu:entry.discovered@world",
                      "值": True, "状态": "verified"},
                     {"类型": "线索-发现", "名称": "太湖风波"},
                 ])
@@ -429,7 +429,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 self.assertEqual(session.public_notice_results(), [])
 
     def test_multiple_prepared_blueprints_adopt_together(self):
-        second_fact = "scene:garden.secret_found@world"
+        second_fact = "scene:garden:secret-compartment.presence@world"
         first = draft_record()
         second = draft_record(
             reward_prefix="garden-secret", fact=second_fact, name="园中暗痕"
@@ -705,7 +705,7 @@ class QuestSettlementIntegrationTest(unittest.TestCase):
                 self.assertEqual(last_node["next"], [])
 
 
-GATE_FACT = "scene:gate-judge.progress@world"
+GATE_FACT = "information:gate-judge:route.target@world"
 
 
 def gate_blueprint():

@@ -76,8 +76,11 @@ def create_quest(world_facts, quest_state, raw_definition, hidden=False, increme
     if incremental:
         _validate_incremental_creation(definition)
     _require_fact_descriptions(definition.get("fact_definitions"))
-    register_definitions(world_facts, definition.get("fact_definitions"))
-    validate_quest_definition(definition, world_facts, quest_state)
+    trial_world_facts = copy.deepcopy(world_facts)
+    register_definitions(trial_world_facts, definition.get("fact_definitions"))
+    validate_quest_definition(definition, trial_world_facts, quest_state)
+    world_facts.clear()
+    world_facts.update(trial_world_facts)
     quest_state["definitions"][quest_name] = definition
     quest_state["runtimes"][quest_name] = new_runtime(definition, hidden)
     return definition
@@ -161,10 +164,13 @@ def extend_quest(world_facts, quest_state, raw_extension, incremental=False):
     expanded = candidate.get("nodes", {}).get(extension_id) or {}
     if expanded.get("extension") or not expanded.get("next"):
         raise ValueError(f"任务【{quest_name}】扩展后须为扩展点【{extension_id}】接入后继节点")
-    register_definitions(world_facts, candidate.get("fact_definitions"))
+    trial_world_facts = copy.deepcopy(world_facts)
+    register_definitions(trial_world_facts, candidate.get("fact_definitions"))
     validate_extension(
-        previous, candidate, runtime, world_facts, quest_state, extension_id
+        previous, candidate, runtime, trial_world_facts, quest_state, extension_id
     )
+    world_facts.clear()
+    world_facts.update(trial_world_facts)
     quest_state["definitions"][quest_name] = candidate
     runtime["definition_version"] = candidate["version"]
     if extension_id:

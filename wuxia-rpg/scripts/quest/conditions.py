@@ -6,6 +6,9 @@ import copy
 
 _COMPARATORS = ("eq", "ne", "in", "exists", "gt", "gte", "lt", "lte", "status")
 _FACT_STATUSES = {"unknown", "alleged", "verified", "refuted"}
+_TRUE = "true"
+_FALSE = "false"
+_UNKNOWN = "unknown"
 
 
 def referenced_facts(condition):
@@ -47,6 +50,9 @@ def validate_condition(condition):
         raise ValueError("任务条件每层须且只能包含 all/any/not/fact/node 之一")
     if "all" in condition or "any" in condition:
         key = "all" if "all" in condition else "any"
+        extra = set(condition) - {key}
+        if extra:
+            raise ValueError(f"任务条件 {key} 存在未知字段：{sorted(extra)}")
         children = condition[key]
         if not isinstance(children, list) or not children:
             raise ValueError(f"任务条件 {key} 须为非空数组")
@@ -54,6 +60,9 @@ def validate_condition(condition):
             validate_condition(child)
         return
     if "not" in condition:
+        extra = set(condition) - {"not"}
+        if extra:
+            raise ValueError(f"任务条件 not 存在未知字段：{sorted(extra)}")
         validate_condition(condition["not"])
         return
     if "node" in condition:
@@ -82,15 +91,21 @@ def validate_condition(condition):
         raise ValueError(f"事实条件 status 不合法【{condition[operator]}】")
 
 
+def _set_equal(left, right):
+    if not isinstance(left, (list, tuple, set)) or not isinstance(right, (list, tuple, set)):
+        return False
+    return {repr(item) for item in left} == {repr(item) for item in right}
+
+
 def _compare(value, operator, expected, exists):
     if operator == "exists":
         return exists is bool(expected)
     if not exists:
         return False
-    if operator == "eq":
-        return value == expected
-    if operator == "ne":
-        return value != expected
+    if operator in ("eq", "ne"):
+        equal = (_set_equal(value, expected)
+                 if isinstance(value, (list, tuple, set)) else value == expected)
+        return equal if operator == "eq" else not equal
     if operator == "in":
         return isinstance(expected, (list, tuple, set)) and value in expected
     try:
@@ -107,30 +122,54 @@ def _compare(value, operator, expected, exists):
     return False
 
 
-def _fact_leaf(condition, world_facts):
+def _fact_state(condition, world_facts):
     record = (world_facts.get("records") or {}).get(condition["fact"])
-    status = record.get("status") if record else None
-    exists = bool(record and status in ("verified", "refuted", "alleged"))
+    status = record.get("status", "unknown") if record else None
     if "status" in condition:
-        return status, "eq", condition["status"], record is not None
+        if record is None:
+            return _UNKNOWN
+        return _TRUE if status == condition["status"] else _FALSE
     operator = next(key for key in _COMPARATORS if key in condition)
-    return (record.get("value") if record else None), operator, condition[operator], exists and status == "verified"
+    if operator == "exists":
+        exists = bool(record and status in ("verified", "refuted", "alleged"))
+        return _TRUE if _compare(None, operator, condition[operator], exists) else _FALSE
+    if record is None or status in ("unknown", "alleged"):
+        return _UNKNOWN
+    if status != "verified":
+        return _FALSE
+    matched = _compare(record.get("value"), operator, condition[operator], True)
+    return _TRUE if matched else _FALSE
+
+
+def _evaluate_state(condition, world_facts, completed_nodes=None):
+    if condition in (None, {}):
+        return _TRUE
+    completed = set(completed_nodes or [])
+    if "all" in condition:
+        states = [_evaluate_state(child, world_facts, completed)
+                  for child in condition["all"]]
+        if _FALSE in states:
+            return _FALSE
+        return _TRUE if all(state == _TRUE for state in states) else _UNKNOWN
+    if "any" in condition:
+        states = [_evaluate_state(child, world_facts, completed)
+                  for child in condition["any"]]
+        if _TRUE in states:
+            return _TRUE
+        return _FALSE if all(state == _FALSE for state in states) else _UNKNOWN
+    if "not" in condition:
+        state = _evaluate_state(condition["not"], world_facts, completed)
+        if state == _UNKNOWN:
+            return _UNKNOWN
+        return _FALSE if state == _TRUE else _TRUE
+    if "node" in condition:
+        matched = (condition["node"] in completed) is bool(condition.get("completed", True))
+        return _TRUE if matched else _FALSE
+    return _fact_state(condition, world_facts)
 
 
 def evaluate_condition(condition, world_facts, completed_nodes=None):
-    if condition in (None, {}):
-        return True
-    completed = set(completed_nodes or [])
-    if "all" in condition:
-        return all(evaluate_condition(child, world_facts, completed) for child in condition["all"])
-    if "any" in condition:
-        return any(evaluate_condition(child, world_facts, completed) for child in condition["any"])
-    if "not" in condition:
-        return not evaluate_condition(condition["not"], world_facts, completed)
-    if "node" in condition:
-        return (condition["node"] in completed) is bool(condition.get("completed", True))
-    value, operator, expected, exists = _fact_leaf(condition, world_facts)
-    return _compare(value, operator, expected, exists)
+    return _evaluate_state(condition, world_facts, completed_nodes) == _TRUE
 
 
 def condition_possible(condition, world_facts, completed_nodes=None):
@@ -143,10 +182,7 @@ def condition_possible(condition, world_facts, completed_nodes=None):
     if "any" in condition:
         return any(condition_possible(child, world_facts, completed) for child in condition["any"])
     if "not" in condition:
-        child = condition["not"]
-        if evaluate_condition(child, world_facts, completed):
-            return False
-        return True
+        return _evaluate_state(condition["not"], world_facts, completed) != _TRUE
     if "node" in condition:
         wanted = bool(condition.get("completed", True))
         return (condition["node"] in completed) if wanted else True

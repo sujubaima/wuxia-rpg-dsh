@@ -3,6 +3,8 @@
 """任务蓝图图结构、事实定义与扩展历史校验。"""
 from collections import defaultdict, deque
 from quest.conditions import referenced_facts, referenced_nodes, validate_condition
+from quest.world_facts import (FACT_STATUSES, fact_key_parts, normalize_definition,
+                               validate_fact_value)
 
 
 def _node_mutations(node):
@@ -145,11 +147,102 @@ def _validate_graph(definition, activated_extension_ids=frozenset()):
     return predecessors
 
 
+_COMPARATORS = ("eq", "ne", "in", "exists", "gt", "gte", "lt", "lte", "status")
+_ORDERED_COMPARATORS = {"gt", "gte", "lt", "lte"}
+
+
+def _condition_leaves(condition, negated=False):
+    if not isinstance(condition, dict) or condition in ({},):
+        return
+    if "fact" in condition:
+        yield condition, negated
+        return
+    for key in ("all", "any"):
+        for child in condition.get(key) or []:
+            yield from _condition_leaves(child, negated)
+    if "not" in condition:
+        yield from _condition_leaves(condition["not"], not negated)
+
+
+def _validate_fact_leaf(leaf, fact_definition, own_outcome_keys, negated=False):
+    fact_key = leaf["fact"].strip()
+    _, _, predicate, _ = fact_key_parts(fact_key)
+    if predicate == "outcome" and fact_key in own_outcome_keys:
+        raise ValueError("不得以本任务自身 outcome 作为完成/关闭依据；请使用具体选择事实")
+    operator = next(key for key in _COMPARATORS if key in leaf)
+    value_type = fact_definition["value_type"]
+    expected = leaf[operator]
+    if operator == "exists":
+        if expected is False or negated:
+            raise ValueError(
+                "任务条件禁止 exists:false 或其等价否定；实体不存在须由已确认的 .exists == false 事实表达"
+            )
+        return
+    if operator == "status":
+        if expected not in FACT_STATUSES:
+            raise ValueError(f"status 值不合法【{expected}】")
+        return
+    if operator in _ORDERED_COMPARATORS:
+        if value_type != "number":
+            raise ValueError(f"比较符【{operator}】仅支持 number，当前为【{value_type}】")
+        validate_fact_value(fact_definition, expected)
+        return
+    if operator == "in":
+        if value_type == "set":
+            raise ValueError("set 事实不支持 in；请使用规范化后的 eq/ne")
+        if not isinstance(expected, (list, tuple, set)) or not expected:
+            raise ValueError("比较符 in 须提供非空数组")
+        for value in expected:
+            validate_fact_value(fact_definition, value)
+        return
+    if operator in ("eq", "ne"):
+        validate_fact_value(fact_definition, expected)
+        return
+    raise ValueError(f"不支持比较符【{operator}】")
+
+
 def _validate_facts(definition, world_facts):
     quest_name = definition["name"]
+    registered = world_facts.get("definitions", {})
     for fact_key in quest_fact_keys(definition):
-        if fact_key not in world_facts.get("definitions", {}):
+        if fact_key not in registered:
             raise ValueError(f"任务【{quest_name}】引用未注册事实【{fact_key}】")
+    own_outcome_keys = {
+        normalized["fact_key"]
+        for normalized in (
+            normalize_definition(raw) for raw in definition.get("fact_definitions") or []
+        )
+        if normalized["predicate"] == "outcome"
+    }
+    for node_id, node in definition.get("nodes", {}).items():
+        for field, label in (("condition", "完成条件"),
+                             ("close_condition", "关闭条件")):
+            for leaf, negated in _condition_leaves(node.get(field)):
+                fact_key = leaf["fact"].strip()
+                try:
+                    _validate_fact_leaf(
+                        leaf, registered[fact_key], own_outcome_keys, negated
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"任务【{quest_name}】节点【{node_id}】{label}事实【{fact_key}】：{exc}"
+                    ) from exc
+        for mutation in _node_mutations(node):
+            if mutation.get("类型") not in ("事实", "事实-写入", "事实-修订"):
+                continue
+            fact_key = mutation.get("事实") or mutation.get("fact_key")
+            if "值" not in mutation and "value" not in mutation:
+                continue
+            value = mutation.get("值") if "值" in mutation else mutation.get("value")
+            try:
+                validate_fact_value(registered[fact_key], value)
+                status = mutation.get("状态", mutation.get("status", "verified"))
+                if status not in FACT_STATUSES:
+                    raise ValueError(f"状态【{status}】不合法")
+            except ValueError as exc:
+                raise ValueError(
+                    f"任务【{quest_name}】节点【{node_id}】事实效果【{fact_key}】：{exc}"
+                ) from exc
 
 
 def validate_quest_definition(definition, world_facts, quest_state=None,

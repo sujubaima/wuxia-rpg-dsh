@@ -254,7 +254,7 @@ def main():
         check("开场发布前拒绝新 go", blocked.get("状态冲突") == "go_already_staged",
               f"blocked={json.dumps(blocked, ensure_ascii=False)[:200]}")
         opening_actions = [
-            {"类型": "事实-写入", "事实": "quest:v3:taihu.hook@world",
+            {"类型": "事实-写入", "事实": "information:v3:taihu:entry.discovered@world",
              "值": True, "状态": "verified"},
             {"类型": "线索-发现", "名称": "太湖风波"},
         ]

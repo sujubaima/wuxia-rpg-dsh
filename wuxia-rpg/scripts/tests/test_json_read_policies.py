@@ -82,7 +82,7 @@ class AuthoritativeJsonPolicyTest(unittest.TestCase):
     def test_save_includes_world_facts_and_quest_state_snapshot(self):
         with tempfile.TemporaryDirectory() as directory:
             facts = {"version": 1, "definitions": {}, "records": {
-                "world.weather@world": {"value": "rain", "status": "verified"},
+                "player.region@world": {"value": "rain", "status": "verified"},
             }}
             quests = {"version": 1, "definitions": {
                 "rain-case": {"quest_id": "rain-case"},
@@ -99,10 +99,10 @@ class AuthoritativeJsonPolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             slot = Path(directory) / "slot_6"
             (slot / ".data" / "characters").mkdir(parents=True)
-            facts = {"version": 1, "definitions": {"world.weather@world": {
-                "fact_key": "world.weather@world", "value_type": "string",
-            }}, "records": {"world.weather@world": {
-                "fact_key": "world.weather@world", "value": "rain", "status": "verified",
+            facts = {"version": 1, "definitions": {"player.region@world": {
+                "fact_key": "player.region@world", "value_type": "string",
+            }}, "records": {"player.region@world": {
+                "fact_key": "player.region@world", "value": "rain", "status": "verified",
             }}}
             quests = {"version": 1, "definitions": {"rain-case": {"quest_id": "rain-case"}},
                       "runtimes": {"rain-case": {"lifecycle": "active"}},

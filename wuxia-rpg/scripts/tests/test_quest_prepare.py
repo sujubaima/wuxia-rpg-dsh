@@ -208,6 +208,27 @@ class QuestPrepareTest(PendingPrepareCase):
             self.assertEqual(result["turn_state"], blocked_state)
             write_batch.assert_not_called()
 
+    def test_vague_predicate_rejects_whole_batch_without_draft(self):
+        vague = "information:prepared-case:answer.truth@world"
+        bad = blueprint(vague, "模糊真相")
+        bad["事实定义"] = [
+            {"事实键": vague, "描述": "真相已查明", "值类型": "bool"},
+        ]
+        for node in bad["节点"][1:]:
+            node["完成条件"] = {"fact": vague, "eq": True}
+        storage, phase, plot = self._patch_engine_state()
+        with storage, phase, plot, patch("engine._quest_drafts.write_batch") as write_batch:
+            result = engine.quest_prepare({
+                "槽位": 1,
+                "任务": [
+                    {"操作": "创建", "蓝图": blueprint()},
+                    {"操作": "创建", "蓝图": bad},
+                ],
+            })
+        self.assertFalse(result["ok"])
+        self.assertRegex(result["错误"], "抽象结论|不支持谓词")
+        write_batch.assert_not_called()
+
     def test_new_fact_definition_requires_description(self):
         bad = blueprint()
         bad["事实定义"][0].pop("描述")

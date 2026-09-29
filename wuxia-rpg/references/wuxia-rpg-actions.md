@@ -152,15 +152,16 @@ go 无界面后只提交一次 plot-writing，一般状态变更写入 `行为`�
     "引子": "一册旧账牵出疑云。",
     "隐藏目标": "确认账册真伪",
     "事实定义": [
+      {"事实键": "information:ledger-case:entry.discovered@world", "描述": "账册疑点的具体入口信息已被发现", "值类型": "bool"},
       {"事实键": "item:ledger_001.authenticity@world", "描述": "账册的真实真伪", "值类型": "enum", "可选值": ["authentic", "forged"]},
-      {"事实键": "item:ledger_001.missing_pages@world", "描述": "账册是否缺页", "值类型": "bool"}
+      {"事实键": "information:ledger-case:missing-pages.discovered@world", "描述": "翻查时已发现账册缺页", "值类型": "bool"}
     ],
     "起始节点": ["heard"],
     "节点": [
-      {"节点ID": "heard", "完成条件": {}, "完成摘要": "得知账册之谜。", "关闭条件": null, "关闭描述": null, "后继节点": ["authentic", "forged", "follow-up"]},
+      {"节点ID": "heard", "完成条件": {"fact": "information:ledger-case:entry.discovered@world", "eq": true}, "完成摘要": "得知账册之谜。", "关闭条件": null, "关闭描述": null, "后继节点": ["authentic", "forged", "follow-up"]},
       {"节点ID": "authentic", "前置节点": ["heard"], "完成条件": {"fact": "item:ledger_001.authenticity@world", "eq": "authentic"}, "完成摘要": "确认账册是真品。", "关闭条件": null, "关闭描述": null, "终局": true},
       {"节点ID": "forged", "前置节点": ["heard"], "完成条件": {"fact": "item:ledger_001.authenticity@world", "eq": "forged"}, "完成摘要": "查明账册系伪造。", "关闭条件": null, "关闭描述": null, "终局": true},
-      {"节点ID": "follow-up", "前置节点": ["heard"], "完成条件": {"fact": "item:ledger_001.missing_pages@world", "eq": true}, "完成摘要": "翻查发现账册缺页，须追查印章来源。", "关闭条件": null, "关闭描述": null, "扩展点": true}
+      {"节点ID": "follow-up", "前置节点": ["heard"], "完成条件": {"fact": "information:ledger-case:missing-pages.discovered@world", "eq": true}, "完成摘要": "翻查发现账册缺页，须追查印章来源。", "关闭条件": null, "关闭描述": null, "扩展点": true}
         ]
       }
     }
@@ -176,11 +177,15 @@ quest-prepare 成功后不再修改 plot-writing；judge 只传 `槽位`，按�
 {"奖励ID":"ledger:forged:reward","描述":"经验500","状态变更":[{"类型":"经验","操作":"加","角色":"玩家","值":500}]}
 ```
 
-事实定义必须含一句非空 `描述`，用于 GM 候选提示；`值类型` 支持 `bool/enum/number/string/entity/set`，可选 `互斥组`。叙事事实默认只能显式修订。`enum` 的各可选值必须在剧情逻辑下互斥（任一时刻至多一个成立）；可能同时成立的维度须拆成多个事实（如"处置结果"与"是否下毒"是两个事实），否则分支条件会互相掐死，画出拓扑上不可达的蓝图。
+事实定义必须含一句非空 `描述`，用于 GM 候选提示；`值类型` 支持 `bool/enum/number/string/entity/set`，可选 `互斥组`。事实键必须使用 [线索规则](./rules/wuxia-rpg-clue-rules.md#三事实规则) 中的主体族与闭集谓词，不得临时创造 `truth/progress/status/impossible` 等结论谓词。叙事事实默认只能显式修订。`enum` 的各可选值必须在剧情逻辑下互斥（任一时刻至多一个成立）；可能同时成立的维度须拆成多个事实（如"处置结果"与"是否下毒"是两个事实），否则分支条件会互相掐死，画出拓扑上不可达的蓝图。
 
 条件 DSL：
 
 - 事实：`{"fact":"事实键","eq":值}`；比较符还支持 `ne/in/exists/gt/gte/lt/lte/status`；
+- `eq/ne` 适用于全部类型；`in` 只用于 bool/enum/number/string/entity 且须传非空数组；`gt/gte/lt/lte` 只用于 number；`status` 只接受 `unknown/alleged/verified/refuted`；
+- `exists` 的操作数必须为 bool，但任务条件禁止 `exists:false` 及 `not(exists:true)` 等价写法；确认实体不存在时使用已注册 `.exists == false` 事实；
+- set 只支持 `eq/ne/exists/status`；bool 不视为 number；
+- 缺少记录或状态为 `unknown/alleged` 的值比较是 UNKNOWN，`not UNKNOWN` 仍不触发；
 - 节点：`{"node":"节点ID","completed":true}`；
 - 组合：`{"all":[...]}`、`{"any":[...]}`、`{"not":{...}}`；
 - 空对象 `{}` 表示前置满足后立即完成；用于关闭条件时表示到达后立即关闭该支路。
@@ -188,13 +193,13 @@ quest-prepare 成功后不再修改 plot-writing；judge 只传 `槽位`，按�
 关闭支路示例：
 
 ```json
-{"节点ID":"find-witness","前置节点":["heard"],"完成条件":{"fact":"character:witness.found@world","eq":true},"完成摘要":"找到了证人。","关闭条件":{"fact":"character:witness.dead@world","eq":true},"关闭描述":"赶到时证人已经遇害，此路已断。","后继节点":["question-witness"]}
+{"节点ID":"find-witness","前置节点":["heard"],"完成条件":{"fact":"character:witness.contact@player","eq":true},"完成摘要":"找到了证人并与之接触。","关闭条件":{"fact":"character:witness.dead@world","eq":true},"关闭描述":"赶到时证人已经遇害，此路已断。","后继节点":["question-witness"]}
 ```
 
 扩展示例（仅增量模式：只传扩展点与新增节点，不得携全量定义改写既有节点；新增节点一律为扩展点的一级后继，不得再带后继节点）：
 
 ```json
-{"槽位":1,"任务":[{"操作":"扩展","蓝图":{"名称":"账册疑云","扩展点":"follow-up","版本":2,"起始节点":["trace-seal"],"节点":[{"节点ID":"trace-seal","前置节点":["follow-up"],"完成条件":{},"完成摘要":"查到印章来源。","关闭条件":null,"关闭描述":null,"终局":true}]}}]}
+{"槽位":1,"任务":[{"操作":"扩展","蓝图":{"名称":"账册疑云","扩展点":"follow-up","版本":2,"起始节点":["trace-seal"],"事实定义":[{"事实键":"information:ledger-case:seal-origin.discovered@world","描述":"已从具体文书或证词中查到印章来源","值类型":"bool"}],"节点":[{"节点ID":"trace-seal","前置节点":["follow-up"],"完成条件":{"fact":"information:ledger-case:seal-origin.discovered@world","eq":true},"完成摘要":"查到印章来源。","关闭条件":null,"关闭描述":null,"终局":true}]}}]}
 ```
 
 修改示例（奖励结算被 engine 打回时，修正未完成节点的奖励）：

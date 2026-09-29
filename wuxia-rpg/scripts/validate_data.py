@@ -6,12 +6,13 @@ import json
 import sys
 from pathlib import Path
 
+from world import scene_format as sf
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SKILL_DIR / "assets" / "data"
 EFFECTS_DIR = SKILL_DIR / "scripts" / "effects"
 GROUPS = ("characters", "skills", "items", "buffs", "factions")
 INDEXED_GROUPS = ("characters", "skills", "items")
-DIRECTIONS = {"北", "东北", "东", "东南", "南", "西南", "西", "西北"}
 SKILL_TYPES = {"心法", "搏击", "剑法", "刀法", "长兵", "奇门", "暗器"}
 SCENE_TYPES = {"驿站", "店铺", "客栈"}
 
@@ -351,22 +352,69 @@ class Validator:
         for region, limit in limits.items():
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
                 self.error(path, f"上限.{region} 必须是正整数")
+        region_scenes = {}
         for region, graph in graphs.items():
-            if not isinstance(graph, dict) or not graph:
-                self.error(path, f"场景.{region} 必须是非空对象")
+            if not isinstance(graph, dict):
+                self.error(path, f"场景.{region} 必须是对象")
                 continue
+            names = graph.get("场景")
+            edges = graph.get("边")
+            if not isinstance(names, list) or not names:
+                self.error(path, f"场景.{region}.场景 必须是非空数组")
+                names = []
+            valid_names = []
+            for index, name in enumerate(names):
+                if not isinstance(name, str) or not name:
+                    self.error(path, f"场景.{region}.场景[{index}] 必须是非空字符串")
+                else:
+                    valid_names.append(name)
+            scene_names = set(valid_names)
+            if len(scene_names) != len(valid_names):
+                self.error(path, f"场景.{region}.场景 不得包含重复名称")
+            region_scenes[region] = scene_names
+
             exit_name = exits.get(region)
-            if not isinstance(exit_name, str) or exit_name not in graph:
+            if not isinstance(exit_name, str) or exit_name not in scene_names:
                 self.error(path, f"驿站出口.{region} 未指向该区域场景")
-            for scene, edges in graph.items():
-                if not isinstance(edges, dict):
-                    self.error(path, f"场景.{region}.{scene} 必须是对象")
+
+            if not isinstance(edges, list):
+                self.error(path, f"场景.{region}.边 必须是数组")
+                continue
+            seen_edges = set()
+            occupied = {}
+            for index, edge in enumerate(edges):
+                canon = sf.canonical_edge(edge)
+                edge_path = f"场景.{region}.边[{index}]"
+                if canon is None:
+                    self.error(path, f"{edge_path} 必须是两个字符串端点组成的数组")
                     continue
-                for direction, target in edges.items():
-                    if direction not in DIRECTIONS:
-                        self.error(path, f"场景方向无效：{region}.{scene}.{direction}")
-                    if not isinstance(target, str) or target not in graph:
-                        self.error(path, f"场景出口引用不存在：{region}.{scene} -> {target!r}")
+                parsed_a = sf.parse_label(canon[0])
+                parsed_b = sf.parse_label(canon[1])
+                if parsed_a is None or parsed_b is None:
+                    self.error(path, f"{edge_path} 端点须为 场景名.方位")
+                    continue
+                (scene_a, direction_a), (scene_b, direction_b) = parsed_a, parsed_b
+                if scene_a not in scene_names or scene_b not in scene_names:
+                    self.error(path, f"{edge_path} 引用未声明场景：{canon}")
+                    continue
+                if scene_a == scene_b:
+                    self.error(path, f"{edge_path} 不得连接同一场景：{scene_a}")
+                    continue
+                if sf.DIR_REVERSE[direction_a] != direction_b:
+                    self.error(path, f"{edge_path} 两端方位必须互为反向：{canon}")
+                    continue
+                edge_key = tuple(canon)
+                if edge_key in seen_edges:
+                    self.error(path, f"{edge_path} 与已有边重复：{canon}")
+                    continue
+                seen_edges.add(edge_key)
+                conflicts = [label for label in canon if label in occupied]
+                for label in conflicts:
+                    self.error(path, f"{edge_path} 端点已被其他边占用：{label}")
+                if conflicts:
+                    continue
+                for label in canon:
+                    occupied[label] = edge_key
         for region, typed_scenes in scene_types.items():
             if region not in nodes:
                 self.error(path, f"场景类型引用未知区域：{region}")
@@ -374,7 +422,7 @@ class Validator:
                 self.error(path, f"场景类型.{region} 必须是对象")
                 continue
             for scene, info in typed_scenes.items():
-                if scene not in graphs.get(region, {}):
+                if scene not in region_scenes.get(region, set()):
                     self.error(path, f"场景类型引用未知场景：{region}.{scene}")
                 if not isinstance(info, dict):
                     self.error(path, f"场景类型.{region}.{scene} 必须是对象")

@@ -112,6 +112,18 @@ class IncrementalCreationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "初始节点.*不得为终局或扩展点"):
             create_quest(_facts(), empty_quest_state(), raw, incremental=True)
 
+    def test_vague_predicate_is_rejected_without_polluting_facts(self):
+        facts = empty_world_facts()
+        raw = _one_level_blueprint()
+        vague = "information:inc-case:answer.truth@world"
+        raw["事实定义"] = [
+            {"事实键": vague, "描述": "真相已查明", "值类型": "bool"},
+        ]
+        raw["节点"][1]["完成条件"] = {"fact": vague, "eq": True}
+        with self.assertRaisesRegex(ValueError, "抽象结论|不支持谓词"):
+            create_quest(facts, empty_quest_state(), raw, incremental=True)
+        self.assertEqual(facts["definitions"], {})
+
 
 class IncrementalExtensionTest(unittest.TestCase):
     def _prepared(self, fact_value="uncertain"):
@@ -167,6 +179,30 @@ class IncrementalExtensionTest(unittest.TestCase):
                      "前置节点": ["trace-seal"], "完成条件": {}, "终局": True},
                 ],
             }, incremental=True)
+
+    def test_invalid_extension_is_atomic(self):
+        world_facts, quest_state, definition = self._prepared()
+        new_fact = "information:inc-case:witness-account.discovered@world"
+        before_facts = copy.deepcopy(world_facts)
+        before_definition = copy.deepcopy(definition)
+        before_runtime = copy.deepcopy(quest_state["runtimes"][definition["name"]])
+        with self.assertRaisesRegex(ValueError, "取值不符合 bool"):
+            extend_quest(world_facts, quest_state, {
+                "名称": definition["name"], "扩展点": "follow-up", "版本": 2,
+                "起始节点": ["bad-branch"],
+                "事实定义": [
+                    {"事实键": new_fact, "描述": "证人的具体口供已取得", "值类型": "bool"},
+                ],
+                "节点": [
+                    {"节点ID": "bad-branch", "关闭条件": None, "关闭描述": None,
+                     "前置节点": ["follow-up"],
+                     "完成条件": {"fact": new_fact, "eq": "yes"},
+                     "完成摘要": "取得口供。", "终局": True},
+                ],
+            }, incremental=True)
+        self.assertEqual(world_facts, before_facts)
+        self.assertEqual(quest_state["definitions"][definition["name"]], before_definition)
+        self.assertEqual(quest_state["runtimes"][definition["name"]], before_runtime)
 
     def test_preset_style_extension_unrestricted_without_flag(self):
         world_facts, quest_state, definition = self._prepared()

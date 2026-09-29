@@ -23,7 +23,7 @@ from quest.world_facts import empty_world_facts, register_definition, upsert_fac
 
 
 FACT = "item:ledger_001.authenticity@world"
-SEAL_FACT = "item:ledger_001.seal@world"
+SEAL_FACT = "item:ledger_001.integrity@world"
 
 
 def ledger_blueprint(include_forged=True):
@@ -344,7 +344,7 @@ class QuestStateMachineTest(unittest.TestCase):
             })
 
     def test_extension_requires_description_only_for_new_fact_definitions(self):
-        fact = "case:legacy.route@world"
+        fact = "information:legacy-case:route.target@world"
         base = {
             "版本": 1, "名称": "旧档后续",
             "事实定义": [{"事实键": fact, "描述": "旧案后续走向",
@@ -361,7 +361,7 @@ class QuestStateMachineTest(unittest.TestCase):
         create_quest(self.facts, self.quests, base)
         self.facts["definitions"][fact].pop("description")
         self.quests["definitions"]["旧档后续"]["fact_definitions"][0].pop("描述")
-        new_fact = "case:legacy.witness@world"
+        new_fact = "information:legacy-case:witness-account.discovered@world"
         with self.assertRaisesRegex(ValueError, "须提供非空 描述"):
             extend_quest(self.facts, self.quests, {
                 "名称": "旧档后续", "扩展点": "future", "版本": 2,
@@ -669,7 +669,7 @@ class QuestStateMachineTest(unittest.TestCase):
         raw = ledger_blueprint()
         raw["名称"] = "缺描述事实"
         raw["事实定义"] = [{
-            "事实键": "case:missing.description@world", "值类型": "bool",
+            "事实键": "information:missing-case:account.discovered@world", "值类型": "bool",
         }]
         with self.assertRaisesRegex(ValueError, "须提供非空 描述"):
             create_quest(self.facts, self.quests, raw)

@@ -42,11 +42,11 @@ description: 武侠RPG 线索创建、事实推进、扩展、结算与奖励规
 
 设计蓝图时条件先行，按序落笔：
 
-1. 先列本轮玩家可能形成的可辨认结果（2～3 个，互斥），如「探得落脚处」／「对方守口如瓶，此路未通」；
-2. 每个结果分配一个事实键写入 `事实定义`；可能并存的维度拆成不同事实；
+1. 先列本轮可能确认的可观察事件或属性，如「取得账册」「听到证词」「知情者死亡」「文书被毁」；不要先造「此路未通」「真相已明」等结论状态；
+2. 每项使用闭集主体/谓词分配事实键写入 `事实定义`；较高层结论由节点条件中的 `all/any` 组合具体事实，不另建结论谓词；
 3. 事实键与节点互为覆盖：每个事实键至少被一个节点消费，每个节点条件至少引用一个事实键，双向不空才算画完；
-4. 本轮能出结果的写 `终局:true` 加条件；出不了的写 `扩展点:true`，且只挂它自己，不顺带给其他无条件的终局；
-5. 每级只推进一步：本轮写「知道了什么」，下一轮经扩展再写「知道之后如何」。
+4. 本轮能形成明确节点结果的写 `终局:true` 加条件；尚无具体条件的写 `扩展点:true`，且只挂它自己，不顺带给其他无条件的终局；
+5. 每级只推进一步：本轮写「取得/听到/目击了什么」，下一轮经扩展再写「据此如何行动」。
 
 提交 `quest-prepare` 前自检：终局节点的条件都有事实键引用，没有则降级为扩展点；事实键都有节点消费，没有则删键或加节点；从起始节点出发的每条判定路径都能被本轮剧情命中；不设「什么都没查清就结案」的节点。
 
@@ -57,21 +57,63 @@ description: 武侠RPG 线索创建、事实推进、扩展、结算与奖励规
 事实键格式：
 
 ```text
-<subject-id>.<predicate>@<scope>
+<subject>.<predicate>@<scope>
 ```
 
-示例：
+谓词是闭集，不得临时造词或把结论塞入主体 ID。正例：
 
 ```text
 item:ledger_001.authenticity@world
 item:ledger_001.authenticity@character:掌柜
-location:旧宅.accessible@world
+scene:旧宅.accessible@world
+character:witness.dead@world
+information:ledger-case:testimony.heard@player
 ```
+
+反例：
+
+```text
+case:foo.truth-known@world
+information:foo:truth.discovered@world
+quest:foo.impossible@world
+information:foo:evidence.enough@world
+```
+
+`truth/known/unknown/confirmed/verified/possible/impossible/enough/sufficient/progress/stage/state/status/value/resolved/solved/complete/ready/clue/evidence` 等宏观结论词不得作为谓词或主体 ID 词元；机械谓词 `skill:<skill-id>:known` 是唯一的 `known` 例外。`status` 只可作为条件比较符。
+
+### 主体族与谓词
+
+| 主体族 | 允许的叙事谓词 | 值类型 |
+|--------|----------------|--------|
+| `character:<id>` | `exists/location/identity/origin/affiliation/role/stance/present/alive/dead/captured/escaped/freed/contact/in_party` | 按属性为 bool、number 或 string/entity/enum |
+| `item:<id>` | `exists/location/owner/source/destination/origin/authenticity/integrity/quantity/available/discovered/obtained/read/examined/delivered/destroyed` | 按属性为 bool、number 或 string/entity/enum |
+| `document:<id>` | `exists/location/owner/source/destination/origin/authenticity/available/discovered/obtained/read/examined/delivered/destroyed` | bool 或 string/entity/enum |
+| `information:<id>` | `source/destination/origin/identity/owner/target/terms/authenticity/quantity/available/linked/discovered/obtained/read/heard/witnessed/examined/delivered/destroyed` | bool、number、string/entity/enum；`terms` 也可为 set |
+| `scene:<id>` | `exists/location/presence/discovered/accessible/visited/examined/opened/closed/guarded` | bool、string/entity；`presence` 也可为 enum |
+| `faction:<id>` | `exists/location/controller/affiliation/stance` | bool 或 string/entity/enum |
+| `choice:<quest-id>:<ending-id>` | `selected` | bool |
+| `quest:<quest-id>` | `outcome` | enum |
+
+引擎机械事实还固定允许：`party.stamina`、`world.time`、`player.location`、`player.region`、`character:<id>.copper/hp/mp/relation`，以及动态格式 `character:<id>.item:<item-id>:quantity`、`character:<id>.skill:<skill-id>:known/level`。不得把这些谓词移用到其他主体族。
+
+终局条件使用 `choice:<quest-id>:<ending-id>.selected@world == true` 等具体选择事实；终局 effect 再写 `quest:<quest-id>.outcome@world`。同一任务不得把自己的 `outcome` 反过来作为完成或关闭依据。
+
+### 比较符与未知值
+
+| 比较符 | 允许类型 | 约束 |
+|--------|----------|------|
+| `eq/ne` | 全部 | 期望值必须符合事实定义；set 按规范化后的集合比较 |
+| `in` | bool/enum/number/string/entity | 必须是非空数组，每项均符合定义；不用于 set |
+| `gt/gte/lt/lte` | number | bool 不视为 number |
+| `exists` | 全部 | 操作数必须为 bool；任务条件禁止 `exists:false` 及 `not(exists:true)` 等价写法 |
+| `status` | 全部 | 仅允许 `unknown/alleged/verified/refuted` |
+
+缺少记录，或记录状态为 `unknown/alleged` 时，值比较结果是 UNKNOWN，不是 FALSE。因此 `not(UNKNOWN)` 仍为 UNKNOWN，不会触发节点；不得用 `not(尚未记录的事实)` 表达“已确认无法查明”。实体确实不存在时，应注册 `.exists` bool 事实并在剧情确认后写入 `false`。
 
 - 客观真相、NPC 说法、传闻和角色认知必须使用不同 scope，不得混写。
 - 已确认事实冲突时，普通 `事实` 写入会被拒绝；确需揭示误认、调包或设定修订时，用 `事实-修订` 并写明原因。
 - 创建与扩展只校验蓝图结构和事实定义，不按当前事实值检查终局可达性或枚举结果覆盖。
-- 实际事实写入仍须遵守类型、互斥和显式修订规则；任务蓝图不能绕过这些约束。
+- 实际事实写入仍须遵守主体族、谓词、类型、互斥和显式修订规则；任务蓝图不能绕过这些约束。
 
 ## 四、推进与扩展
 
@@ -96,6 +138,7 @@ location:旧宅.accessible@world
 
 - `all` 汇合任一必需路径关闭即阻断；`any` 汇合仅在所有路径关闭后阻断。
 - 上游阻断的节点不显示摘要。
+- 路线关闭必须引用具体阻断事实，例如 `character:witness.dead == true`、`document:ledger.destroyed == true` 或 `information:case:witness-source.available == false`；只有证人已死、文书已毁或来源已明确不可达时才能写入。不得创建「无法查明」「线索断绝」等结论事实。
 - 完成、关闭和阻断均不可自动恢复；出现转机时扩展新路径。
 - 所有路径均完成、关闭或阻断且未触发终局时，线索自动结束。
 
